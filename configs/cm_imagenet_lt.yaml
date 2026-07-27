@@ -1,6 +1,10 @@
 campaign:
   name: cm_baselines_v1
-  description: "CM-source baseline matrix: DDPM, CBDM, OC, CM on CIFAR-10-LT, CIFAR-100-LT and ImageNet-LT"
+  # This is a released-code sensitivity port, not a literal CM paper-table
+  # reproduction. The supplied CM prose says 300k updates, while the vendored
+  # CIFAR-10 config uses 200k and its CIFAR-100 config uses 300k. Preserve that
+  # discrepancy visibly instead of choosing a number after seeing results.
+  description: "CM released-code sensitivity: DDPM, CBDM, OC, CM on CIFAR-LT and ImageNet-LT"
   paper_protocol: cm_baselines_fid_kid
   server_config: configs/server.yaml
   paired_seeds: [0, 1, 2]

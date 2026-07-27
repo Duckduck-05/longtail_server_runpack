@@ -28,12 +28,15 @@ metric references, resumes safely when rerun, and launches the full campaign.
 method T2H. Running both names would double-count the same method.
 
 Every completed row uses the same balanced CIFAR reference and reports FID,
-IS, F₈, F₁⁄₈, improved-PRD precision, and improved-PRD recall. The resulting
-single table is written to:
+KID, IS, F₈, F₁⁄₈, improved-PRD precision, and improved-PRD recall. It also
+writes a separate per-class and Many/Medium/Few FID breakdown with its exact
+sample counts. The resulting reports are written to:
 
 ```text
 runs/unified_cifar_v1/report/table.md
+runs/unified_cifar_v1/report/tail_breakdown.md
 runs/unified_cifar_v1/report/per_seed.csv
+runs/unified_cifar_v1/report/tail_per_seed.csv
 runs/unified_cifar_v1/report/summary.json
 ```
 
@@ -45,3 +48,6 @@ publishing a partial comparison.
 This is a new controlled benchmark, so it must be described as such in a
 paper—not as a bit-for-bit reproduction of any individual paper table. Full
 method and protocol audit: [UNIFIED_CIFAR_PROTOCOL.md](UNIFIED_CIFAR_PROTOCOL.md).
+The CM/CORAL-derived experimental design, seed policy, paper-boundary audit,
+and ablation/scaling plan are in
+[EXPERIMENT_DESIGN_CM_CORAL.md](EXPERIMENT_DESIGN_CM_CORAL.md).

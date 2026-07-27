@@ -123,15 +123,30 @@ class CMAdapter(Adapter):
         # canonicalize them to the exact [N, 3, 32, 32] / label contract.
         if task.eval.get("metric_protocol") == "unified_cifar_v1":
             metrics = run_dir / str(task.eval.get("metrics_file", "metrics.unified.json"))
+            metric_cmd = [
+                py, str(self.root / "tools" / "evaluate_coral2025.py"),
+                "--repo", str(Path(task.runtime["repos_root"]) / "CBDM-pytorch"),
+                "--data-type", str(task.dataset["data_type"]),
+                "--samples", str(unified_samples), "--labels", str(unified_labels),
+                "--metrics-root", str(Path(task.runtime["repos_root"]) / "CBDM-pytorch" / "stats"),
+                "--output", str(metrics),
+            ]
+            if task.eval.get("kid", False):
+                metric_cmd += ["--kid", "--kid-subsets", str(task.eval.get("kid_subsets", 100)),
+                               "--kid-subset-size", str(task.eval.get("kid_subset_size", 1000)),
+                               "--kid-seed", str(task.eval.get("kid_seed", 2026))]
+            per_class_file = str(task.eval.get("per_class_metrics_file", "")).strip()
+            if per_class_file:
+                metric_cmd += ["--per-class-output", str(run_dir / per_class_file),
+                               "--longtail-groups", str(task.eval.get("longtail_groups", "none"))]
+            outputs = [metrics]
+            if per_class_file:
+                outputs.append(run_dir / per_class_file)
             return base_phases + [
                 Phase(
                     "unified_metrics",
-                    [py, str(self.root / "tools" / "evaluate_coral2025.py"),
-                     "--repo", str(Path(task.runtime["repos_root"]) / "CBDM-pytorch"),
-                     "--data-type", str(task.dataset["data_type"]), "--samples", str(unified_samples), "--labels", str(unified_labels),
-                     "--metrics-root", str(Path(task.runtime["repos_root"]) / "CBDM-pytorch" / "stats"),
-                     "--output", str(metrics)],
-                    self.root, skip_if_exists=[metrics],
+                    metric_cmd,
+                    self.root, skip_if_exists=outputs,
                 ),
             ]
         cifar = "cifar10" if task.dataset.get("data_type") == "cifar10lt" else "cifar100"

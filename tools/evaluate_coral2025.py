@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Evaluate one 50k generated array using the Table-1 metric protocol."""
+"""Evaluate one generated CIFAR array with a pinned common metric protocol.
+
+The CORAL paper metrics remain available as the minimal default.  The unified
+CM+CORAL benchmark opts into KID and class/split FID reporting explicitly, so
+that a paper-faithful CORAL rerun never silently acquires a new metric burden.
+"""
 from __future__ import annotations
 import argparse, json, os, sys
 from pathlib import Path
@@ -8,7 +13,55 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path: sys.path.insert(0, str(ROOT))
-from ltx.paper_metrics import improved_prd_vgg16_k3
+from ltx.paper_metrics import improved_prd_vgg16_k3, polynomial_mmd_kid
+
+
+def _inception_features(repo: Path, images: np.ndarray, batch_size: int) -> np.ndarray:
+    """Extract the exact pinned CBDM Inception feature used for FID/KID.
+
+    ``score.both`` does not expose its FID activations.  Re-extracting them
+    here avoids modifying the released metric API while keeping the source
+    architecture/weights identical for all five methods.
+    """
+    import torch
+
+    if not torch.cuda.is_available():
+        raise RuntimeError("common CIFAR KID/per-class FID evaluation requires CUDA")
+    sys.path.insert(0, str(repo))
+    from score.inception import InceptionV3
+
+    model = InceptionV3([InceptionV3.BLOCK_INDEX_BY_DIM[2048]]).cuda().eval()
+    values = np.empty((len(images), 2048), dtype=np.float32)
+    with torch.no_grad():
+        for start in range(0, len(images), batch_size):
+            batch = torch.from_numpy(np.ascontiguousarray(images[start:start + batch_size])).float().cuda(non_blocking=True)
+            values[start:start + len(batch)] = model(batch)[0].flatten(1).cpu().numpy().astype(np.float32, copy=False)
+    return values
+
+
+def _fid(features: np.ndarray, reference: np.ndarray, calculate_frechet_distance) -> float:
+    if len(features) < 2 or len(reference) < 2:
+        raise ValueError(f"FID requires at least two samples on each side, got {len(features)} and {len(reference)}")
+    return float(calculate_frechet_distance(
+        np.mean(features, axis=0), np.cov(features, rowvar=False),
+        np.mean(reference, axis=0), np.cov(reference, rowvar=False),
+    ))
+
+
+def _three_way_groups(nclass: int) -> dict[str, np.ndarray]:
+    if nclass == 10:
+        return {
+            "Many": np.arange(0, 3),
+            "Medium": np.arange(3, 6),
+            "Few": np.arange(6, 10),
+        }
+    if nclass == 100:
+        return {
+            "Many": np.arange(0, 33),
+            "Medium": np.arange(33, 66),
+            "Few": np.arange(66, 100),
+        }
+    raise ValueError(f"CM three-way grouping only supports 10 or 100 classes, got {nclass}")
 
 def main() -> None:
     parser = argparse.ArgumentParser()
@@ -20,6 +73,13 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--vgg-batch-size", type=int, default=64)
     parser.add_argument("--knn-query-batch", type=int, default=128)
+    parser.add_argument("--kid", action="store_true", help="append deterministic CM-style KID to the common metrics JSON")
+    parser.add_argument("--kid-subsets", type=int, default=100)
+    parser.add_argument("--kid-subset-size", type=int, default=1000)
+    parser.add_argument("--kid-seed", type=int, default=2026)
+    parser.add_argument("--per-class-output", type=Path, default=None,
+                        help="optional JSON with per-class FID and CM Many/Medium/Few FIDs")
+    parser.add_argument("--longtail-groups", choices=("none", "cm_three_way"), default="none")
     args = parser.parse_args()
     images = np.load(args.samples, mmap_mode="r"); labels = np.load(args.labels, mmap_mode="r")
     nclass = 100 if args.data_type == "cifar100lt" else 10
@@ -40,11 +100,67 @@ def main() -> None:
     reference_radii = np.load(args.metrics_root / f"{dataset}_vgg16_fc2_k3_radii.npy", mmap_mode="r")
     precision, recall = improved_prd_vgg16_k3(np.asarray(images), np.asarray(reference_features), np.asarray(reference_radii),
                                                batch_size=args.vgg_batch_size, query_batch=args.knn_query_batch)
-    payload = {"metrics": {"FID": float(fid), "IS": float(is_score), "IS_std": float(is_std), "F_8": float(prd[0]),
-                           "F_1_8": float(prd[1]), "ImprovedPrecision": float(precision), "Recall": float(recall)},
+    metrics = {"FID": float(fid), "IS": float(is_score), "IS_std": float(is_std), "F_8": float(prd[0]),
+               "F_1_8": float(prd[1]), "ImprovedPrecision": float(precision), "Recall": float(recall)}
+    payload = {"metrics": metrics,
                "protocol": {"samples": 50000, "labels": "uniform support across classes", "real_reference": "balanced CIFAR train",
                             "standard_prd": f"InceptionV3, {nclass * 20} clusters", "improved_prd": "VGG16 fc2, exact k-NN manifold k=3"},
                "label_histogram": counts.tolist()}
+    if args.kid or args.per_class_output:
+        generated_features = _inception_features(args.repo, np.asarray(images), batch_size=args.vgg_batch_size)
+        reference_features = np.load(args.metrics_root / f"{dataset}_feats.npy", mmap_mode="r")
+        if args.kid:
+            metrics["KID"] = polynomial_mmd_kid(
+                generated_features, reference_features, num_subsets=args.kid_subsets,
+                max_subset_size=args.kid_subset_size, rng=np.random.default_rng(args.kid_seed),
+            )
+            payload["protocol"]["kid"] = {
+                "feature_extractor": "pinned CBDM InceptionV3 (2048-d)",
+                "estimator": "unbiased cubic polynomial MMD, CM release formula",
+                "subsets": args.kid_subsets, "max_subset_size": args.kid_subset_size,
+                "subset_rng_seed": args.kid_seed,
+            }
+        if args.per_class_output:
+            labels_path = args.metrics_root / f"{dataset}_labels.npy"
+            if not labels_path.is_file():
+                raise FileNotFoundError(
+                    f"per-class FID requires the balanced-reference labels asset {labels_path}; "
+                    "rerun tools/prepare_cifar_metric_assets.py"
+                )
+            reference_labels = np.load(labels_path, mmap_mode="r")
+            from score.fid import calculate_frechet_distance
+            per_class = {}
+            for class_id in range(nclass):
+                generated_mask = np.asarray(labels) == class_id
+                reference_mask = np.asarray(reference_labels) == class_id
+                per_class[str(class_id)] = {
+                    "FID": _fid(generated_features[generated_mask], reference_features[reference_mask], calculate_frechet_distance),
+                    "generated": int(generated_mask.sum()), "reference": int(reference_mask.sum()),
+                }
+            groups = {}
+            if args.longtail_groups == "cm_three_way":
+                for name, classes in _three_way_groups(nclass).items():
+                    generated_mask = np.isin(labels, classes)
+                    reference_mask = np.isin(reference_labels, classes)
+                    groups[name] = {
+                        "FID": _fid(generated_features[generated_mask], reference_features[reference_mask], calculate_frechet_distance),
+                        "classes": classes.tolist(), "generated": int(generated_mask.sum()), "reference": int(reference_mask.sum()),
+                    }
+            per_class_payload = {
+                "protocol": {
+                    "feature_extractor": "pinned CBDM InceptionV3 (2048-d)",
+                    "reference": "balanced CIFAR train",
+                    "sample_schedule": "same 50k class-uniform samples as overall table",
+                    "important_caveat": (
+                        "CM's published split FIDs use separately sampled 20k generated images per split. "
+                        "These values use the common table's class-uniform 50k sample and are only comparable within this campaign."
+                    ),
+                },
+                "per_class": per_class,
+                "groups": groups,
+            }
+            args.per_class_output.parent.mkdir(parents=True, exist_ok=True)
+            args.per_class_output.write_text(json.dumps(per_class_payload, indent=2) + "\n", encoding="utf-8")
     args.output.parent.mkdir(parents=True, exist_ok=True); args.output.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(payload["metrics"], sort_keys=True))
 

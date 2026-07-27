@@ -3,15 +3,27 @@ import importlib.util
 import json
 from pathlib import Path
 
+import numpy as np
 import yaml
 
 from ltx.adapters.cm import CMAdapter
 from ltx.adapters.coral import CoralAdapter
 from ltx.adapters.oc import OCAdapter
 from ltx.config import load_campaign
+from ltx.paper_metrics import polynomial_mmd_kid
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_common_kid_is_finite_and_reproducible_with_its_locked_subset_seed():
+    rng = np.random.default_rng(7)
+    generated = rng.normal(size=(31, 8)).astype(np.float32)
+    reference = rng.normal(size=(37, 8)).astype(np.float32)
+    first = polynomial_mmd_kid(generated, reference, num_subsets=4, max_subset_size=20, rng=np.random.default_rng(2026))
+    second = polynomial_mmd_kid(generated, reference, num_subsets=4, max_subset_size=20, rng=np.random.default_rng(2026))
+    assert np.isfinite(first)
+    assert first == second
 
 
 def test_unified_matrix_is_one_nonduplicated_fair_table():
@@ -52,11 +64,15 @@ def test_unified_adapters_emit_common_metric_and_label_contract(tmp_path):
     assert resolved["evaluation"]["omega"] == 1.0
     assert "--samples_output" in cm_phases[1].command[-1]
     assert "evaluate_coral2025.py" in " ".join(cm_phases[-1].command)
+    assert "--kid" in cm_phases[-1].command
+    assert "--per-class-output" in cm_phases[-1].command
 
     coral_task = replace(task_by_method["ddpm"], run_dir=str(tmp_path / "coral"))
     coral_phases = CoralAdapter(ROOT).phases(coral_task)
     assert "--uniform_labels" in coral_phases[1].command
-    assert coral_phases[-1].command[-1].endswith("metrics.unified.json")
+    assert "--kid" in coral_phases[-1].command
+    assert "--per-class-output" in coral_phases[-1].command
+    assert any(str(value).endswith("metrics.unified.json") for value in coral_phases[-1].command)
 
     t2h_task = replace(task_by_method["t2h"], run_dir=str(tmp_path / "t2h"))
     t2h_phases = OCAdapter(ROOT).phases(t2h_task)
@@ -64,6 +80,8 @@ def test_unified_adapters_emit_common_metric_and_label_contract(tmp_path):
     assert "--uniform_labels" in eval_command
     assert "--sample_method=ddpm" in eval_command
     assert "--ddim_skip_step=1" in eval_command
+    assert "--kid" in t2h_phases[-1].command
+    assert "--per-class-output" in t2h_phases[-1].command
 
 
 def test_uniform_label_ports_are_present_in_vendored_sources():
@@ -87,6 +105,7 @@ def test_unified_report_writes_one_complete_fifteen_row_table(tmp_path, monkeypa
         seed = task.seed
         metrics = {
             "FID": 10.0 + index / 100 + seed / 1000,
+            "KID": 0.003 + index / 1_000_000 + seed / 10_000_000,
             "IS": 5.0 + index / 100 + seed / 1000,
             "F_8": 0.5 + index / 10000 + seed / 100000,
             "F_1_8": 0.4 + index / 10000 + seed / 100000,
@@ -94,6 +113,10 @@ def test_unified_report_writes_one_complete_fifteen_row_table(tmp_path, monkeypa
             "Recall": 0.7 + index / 10000 + seed / 100000,
         }
         (run_dir / "metrics.unified.json").write_text(json.dumps({"metrics": metrics}))
+        (run_dir / "metrics.per_class.json").write_text(json.dumps({"groups": {
+            group: {"FID": 12.0 + index / 100 + group_index / 10, "generated": 15000, "reference": 15000}
+            for group_index, group in enumerate(("Many", "Medium", "Few"))
+        }}))
 
     spec = importlib.util.spec_from_file_location("unified_report", ROOT / "tools/report_unified_cifar.py")
     assert spec and spec.loader
@@ -104,6 +127,8 @@ def test_unified_report_writes_one_complete_fifteen_row_table(tmp_path, monkeypa
     assert module.main() == 0
     table = (output / "table.md").read_text(encoding="utf-8")
     assert table.count("| cifar") == 15
+    assert "KID ↓" in table
+    assert (output / "tail_breakdown.md").is_file()
     payload = json.loads((output / "summary.json").read_text(encoding="utf-8"))
     assert len(payload["aggregate"]) == 15
     assert all(row["complete"] for row in payload["aggregate"])

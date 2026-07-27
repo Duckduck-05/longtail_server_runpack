@@ -1,11 +1,14 @@
-# Faithful CIFAR portion of CORAL (NeurIPS 2025, arXiv:2506.15933v2).
+# CORAL's runnable CIFAR recipe (NeurIPS 2025, arXiv:2506.15933v2), rerun as
+# a new three-seed extension. The supplied paper tables are point estimates and
+# do not document a three-seed protocol, so this must not be described as the
+# authors' original seed policy.
 # The public CORAL/CBDM/OC sources cannot run the paper's CelebA-5 or
 # ImageNet-LT protocols, so those two paper datasets are intentionally absent
 # rather than silently approximated.  See AUDIT_CORAL2025.md.
 campaign:
   name: coral2025_cifar_v1
   paper_protocol: coral2025_table1_cifar
-  description: "CORAL Table-1 CIFAR reproduction: DDPM, CBDM, T2H, CORAL; 3 paired seeds"
+  description: "CORAL Table-1 CIFAR recipe: DDPM, CBDM, T2H, CORAL; new 3-seed rerun"
   server_config: configs/server.yaml
   paired_seeds: [0, 1, 2]
   default_priority: 100

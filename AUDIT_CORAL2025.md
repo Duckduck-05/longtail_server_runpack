@@ -2,10 +2,12 @@
 
 Scope: CORAL Table 1, CIFAR10-LT IF100, CIFAR10-LT IF1000, and CIFAR100-LT
 IF100. The executable matrix has DDPM, CBDM, T2H, and CORAL for each dataset
-and seeds 0/1/2: 36 tasks. Hyperparameters are locked from Appendix A/Table 3
-of arXiv:2506.15933v2: CIFAR core methods train for 150k steps with batch 128,
-lr 2e-4, dropout 0.1, and T=1000; T2H trains for 200k. Each evaluation requests
-50k uniformly class-labelled samples.
+and seeds 0/1/2: 36 tasks. This is a **new three-seed rerun**, not a claim that
+the CORAL authors used three seeds: the supplied paper Table 1 reports point
+estimates without a seed count or standard deviations. Hyperparameters are
+locked from Appendix A/Table 3 of arXiv:2506.15933v2: CIFAR core methods train
+for 150k steps with batch 128, lr 2e-4, dropout 0.1, and T=1000; T2H trains for
+200k. Each evaluation requests 50k uniformly class-labelled samples.
 
 The published comparison columns are FID, IS, F_8, improved-PRD Recall, and
 F_1_8. Their exact Table-1 values are a machine-readable reference in

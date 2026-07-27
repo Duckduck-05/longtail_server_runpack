@@ -1,9 +1,14 @@
-"""Shared CORAL-2025 metric protocol: VGG16 improved PRD with k=3.
+"""Shared paper-facing generation metrics.
 
 The public CBDM release uses an Inception/k=5 approximation.  This module
 implements the evaluator stated in the paper and is deliberately shared by all
 methods, including T2H.  It uses chunked exact squared distances, avoiding a
 50k×50k host allocation.
+
+``polynomial_mmd_kid`` is the unbiased cubic-kernel estimate used by the CM
+release.  The CM source draws from NumPy's process-global RNG; this runpack
+accepts an explicit generator so a KID value is reproducible and therefore
+comparable across independently launched method jobs.
 """
 from __future__ import annotations
 
@@ -11,6 +16,45 @@ from pathlib import Path
 from typing import Iterable
 
 import numpy as np
+
+
+def polynomial_mmd_kid(
+    generated_features: np.ndarray,
+    reference_features: np.ndarray,
+    *,
+    num_subsets: int = 100,
+    max_subset_size: int = 1000,
+    rng: np.random.Generator | None = None,
+) -> float:
+    """Compute KID with CM's cubic polynomial kernel estimator.
+
+    This is algebraically identical to ``ImbDiff-CM/imbdiff_cm/metrics.py``
+    except that subset draws use a caller-controlled random generator.  It is
+    intentionally a *single* KID estimate, not an artificial standard
+    deviation based on repeatedly re-evaluating one trained model.
+    """
+    generated = np.asarray(generated_features, dtype=np.float32)
+    reference = np.asarray(reference_features, dtype=np.float32)
+    if generated.ndim != 2 or reference.ndim != 2 or generated.shape[1] != reference.shape[1]:
+        raise ValueError(
+            "KID expects generated/reference arrays with matching [N, feature_dim] shapes, got "
+            f"{generated.shape} and {reference.shape}"
+        )
+    subset = min(len(generated), len(reference), int(max_subset_size))
+    if subset < 2:
+        raise ValueError("KID requires at least two generated and two reference feature vectors")
+    if int(num_subsets) < 1:
+        raise ValueError("KID requires num_subsets >= 1")
+    generator = rng or np.random.default_rng(0)
+    dim = generated.shape[1]
+    total = 0.0
+    for _ in range(int(num_subsets)):
+        x = generated[generator.choice(len(generated), subset, replace=False)]
+        y = reference[generator.choice(len(reference), subset, replace=False)]
+        a = (x @ x.T / dim + 1.0) ** 3 + (y @ y.T / dim + 1.0) ** 3
+        b = (x @ y.T / dim + 1.0) ** 3
+        total += (a.sum() - np.diag(a).sum()) / (subset - 1) - 2.0 * b.sum() / subset
+    return float(total / int(num_subsets) / subset)
 
 
 def _torch():

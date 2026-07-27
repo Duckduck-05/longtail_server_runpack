@@ -44,8 +44,13 @@ double-counted row.
 - 50,000 generated 32×32 RGB images per run, with exact cyclic class-uniform
   condition labels (5,000/class for CIFAR-10; 500/class for CIFAR-100).
 - One array-based evaluator for every method: balanced CIFAR-train FID,
-  Inception Score, Inception PRD F₈ and F₁⁄₈, plus VGG16-fc2 improved-PRD
-  precision/recall (exact k-NN radius, k=3).
+  deterministic CM-style KID (the released cubic MMD estimator, fixed subset
+  RNG), Inception Score, Inception PRD F₈ and F₁⁄₈, plus VGG16-fc2
+  improved-PRD precision/recall (exact k-NN radius, k=3).
+- A separate `tail_breakdown.md`: per-class FID and CM's class-index
+  Many/Medium/Few FID groups. These use the main table's 50k class-uniform
+  sample rather than CM's separately sampled 20k/split protocol, so they are
+  not labelled as a CM Table-3 reproduction.
 
 The sources use their native method-specific loss code. That is required to
 evaluate the actual methods; the protocol locks all controllable data, budget,
@@ -68,8 +73,14 @@ and metric factors around them.
 ## Report fields
 
 `table.md` is intentionally one table with `Data`, `Method`, seed completion,
-FID, IS, F₈, F₁⁄₈, improved-PRD precision, improved-PRD recall, FID rank, and
-mean metric rank. Every metric is `mean ± sample standard deviation` over the
-three training seeds. `per_seed.csv` and `summary.json` preserve raw rows,
-metric definitions, paths, and the complete fairness contract. W&B stores the
-same per-seed and aggregate tables as versioned artifacts.
+FID, KID, IS, F₈, F₁⁄₈, improved-PRD precision, improved-PRD recall, FID rank,
+and each metric is `mean ± sample standard deviation` over the three training
+seeds. The report deliberately does not average ranks across heterogeneous
+metrics. `per_seed.csv`, `tail_per_seed.csv`,
+`tail_breakdown.md`, and `summary.json` preserve raw rows, metric definitions,
+sample counts, paths, and the complete fairness contract. W&B stores the same
+per-seed and aggregate tables as versioned artifacts.
+
+This is only the common benchmark. See
+[EXPERIMENT_DESIGN_CM_CORAL.md](EXPERIMENT_DESIGN_CM_CORAL.md) for the strict
+separation between it and paper-protocol sensitivity/reproduction tables.

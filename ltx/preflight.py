@@ -440,12 +440,15 @@ def _check_unified_cifar_contract(campaign: LoadedCampaign, repo_root: Path) -> 
         if task.eval.get("sampler_family") != contract.get("sampler_family"): settings_errors.append(f"{prefix}: sampler")
         if task.eval.get("metric_protocol") != contract.get("metric_protocol"): settings_errors.append(f"{prefix}: metrics")
         if int(task.dataset.get("split_seed", -1)) != 0: settings_errors.append(f"{prefix}: split_seed")
+        if not task.eval.get("kid", False): settings_errors.append(f"{prefix}: KID")
+        if not task.eval.get("per_class_metrics_file"): settings_errors.append(f"{prefix}: per-class FID")
+        if task.eval.get("longtail_groups") != "cm_three_way": settings_errors.append(f"{prefix}: Many/Medium/Few grouping")
         if task.adapter == "cm" and not task.train.get("inclusive_final_step", False): settings_errors.append(f"{prefix}: CM inclusive endpoint")
         if task.adapter in {"cm", "oc"} and int(task.eval.get("ddim_skip_step", -1)) != 1: settings_errors.append(f"{prefix}: ancestral step")
     if settings_errors:
         checks.append(Check("ERROR", "unified-controls", "; ".join(settings_errors)))
     else:
-        checks.append(Check("PASS", "unified-controls", f"{updates} updates, batch={batch}, lr={lr:g}, T={diffusion_steps}, N={generated}, one evaluator"))
+        checks.append(Check("PASS", "unified-controls", f"{updates} updates, batch={batch}, lr={lr:g}, T={diffusion_steps}, N={generated}, common evaluator + KID + tail FID"))
 
     evaluator = campaign.root / "tools" / "evaluate_coral2025.py"
     if evaluator.is_file():
@@ -478,9 +481,9 @@ def _check_coral_metric_assets(campaign: LoadedCampaign) -> List[Check]:
     wanted = {str(t.dataset.get("data_type", "")) for t in tasks}
     names = set()
     if "cifar10" in wanted or "cifar10lt" in wanted:
-        names.update(("cifar10.train.npz", "cifar10_feats.npy", "cifar10_vgg16_fc2.npy", "cifar10_vgg16_fc2_k3_radii.npy"))
+        names.update(("cifar10.train.npz", "cifar10_feats.npy", "cifar10_labels.npy", "cifar10_vgg16_fc2.npy", "cifar10_vgg16_fc2_k3_radii.npy"))
     if "cifar100" in wanted or "cifar100lt" in wanted:
-        names.update(("cifar100.train.npz", "cifar100_feats.npy", "cifar100_vgg16_fc2.npy", "cifar100_vgg16_fc2_k3_radii.npy"))
+        names.update(("cifar100.train.npz", "cifar100_feats.npy", "cifar100_labels.npy", "cifar100_vgg16_fc2.npy", "cifar100_vgg16_fc2_k3_radii.npy"))
     missing = sorted(name for name in names if not (metrics_root / name).is_file())
     if missing:
         checks.append(Check("ERROR", "paper-metric-assets", f"{metrics_root}: missing balanced-reference assets {missing}"))

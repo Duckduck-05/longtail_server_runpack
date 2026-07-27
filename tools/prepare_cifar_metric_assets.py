@@ -59,8 +59,13 @@ def extract(repo: Path, data_root: Path, output: Path, dataset_name: str, batch_
 
     output.mkdir(parents=True, exist_ok=True)
     feature_path = output / f"{dataset_name}_feats.npy"
+    labels_path = output / f"{dataset_name}_labels.npy"
     fid_path = output / f"{dataset_name}.train.npz"
     np.save(feature_path, features)
+    # Preserve class membership next to the balanced Inception cache.  This
+    # lets the common evaluator compute per-class and Many/Medium/Few FIDs
+    # without ever rebuilding a reference from the imbalanced training split.
+    np.save(labels_path, np.asarray(dataset.targets, dtype=np.int64))
     np.savez(fid_path, mu=features.mean(axis=0, dtype=np.float64), sigma=np.cov(features, rowvar=False))
     # Paper Recall uses VGG16 fc2 features and a k=3 manifold, not the
     # Inception/k=5 approximation present in the released CBDM evaluator.
@@ -89,6 +94,8 @@ def extract(repo: Path, data_root: Path, output: Path, dataset_name: str, batch_
         "repository_commit": commit,
         "feature_file": feature_path.name,
         "feature_sha256": sha256(feature_path),
+        "labels_file": labels_path.name,
+        "labels_sha256": sha256(labels_path),
         "fid_file": fid_path.name,
         "fid_sha256": sha256(fid_path),
         "improved_prd_feature_extractor": "torchvision VGG16 ImageNet fc2 (4096-d), source-compatible resize to 224",
@@ -116,7 +123,7 @@ def main() -> None:
     if not args.repo.joinpath("score", "inception.py").is_file():
         raise FileNotFoundError(f"not a pinned CBDM checkout: {args.repo}")
     for name in args.datasets:
-        required = (args.output / f"{name}.train.npz", args.output / f"{name}_feats.npy", args.output / f"{name}_vgg16_fc2.npy", args.output / f"{name}_vgg16_fc2_k3_radii.npy", args.output / f"{name}.metric_manifest.json")
+        required = (args.output / f"{name}.train.npz", args.output / f"{name}_feats.npy", args.output / f"{name}_labels.npy", args.output / f"{name}_vgg16_fc2.npy", args.output / f"{name}_vgg16_fc2_k3_radii.npy", args.output / f"{name}.metric_manifest.json")
         if all(path.exists() for path in required):
             print(f"[metric-assets] keeping existing {name} assets in {args.output}")
         else:

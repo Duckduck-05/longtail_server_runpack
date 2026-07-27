@@ -23,9 +23,9 @@ from ltx.utils import load_runtime_env
 # ``Recall`` is the improved-PRD VGG16 k=3 manifold recall.  The two F terms
 # are the Inception PRD endpoints.  Keeping those names makes the JSON / W&B
 # values match the evaluator exactly while the Markdown header explains them.
-METRICS = ("FID", "IS", "F_8", "F_1_8", "ImprovedPrecision", "Recall")
+METRICS = ("FID", "KID", "IS", "F_8", "F_1_8", "ImprovedPrecision", "Recall")
 DISPLAY = {
-    "FID": "FID ↓", "IS": "IS ↑", "F_8": "F₈ ↑", "F_1_8": "F₁⁄₈ ↑",
+    "FID": "FID ↓", "KID": "KID ↓", "IS": "IS ↑", "F_8": "F₈ ↑", "F_1_8": "F₁⁄₈ ↑",
     "ImprovedPrecision": "IPR precision ↑", "Recall": "IPR recall ↑",
 }
 
@@ -48,6 +48,20 @@ def read_metrics(run_dir: Path) -> dict[str, float]:
         parsed = {metric: finite(values.get(metric, values.get(f"generation/{metric}"))) for metric in METRICS}
         return {metric: value for metric, value in parsed.items() if value is not None}
     return {}
+
+
+def read_tail_breakdown(run_dir: Path, filename: str) -> dict[str, dict[str, Any]]:
+    """Read per-seed CM-style group FIDs produced by the common evaluator."""
+    path = run_dir / filename
+    if not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        groups = payload.get("groups", {})
+        return {str(name): value for name, value in groups.items()
+                if isinstance(value, dict) and finite(value.get("FID")) is not None}
+    except (OSError, ValueError, TypeError):
+        return {}
 
 
 def fmt(mean: float | None, std: float | None) -> str:
@@ -74,10 +88,14 @@ def main() -> int:
 
     rows: list[dict[str, Any]] = []
     grouped: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    tail_rows: list[dict[str, Any]] = []
     for task in campaign.tasks:
         run_dir = Path(task.run_dir)
         metrics = read_metrics(run_dir)
-        complete = (run_dir / "SUCCESS").is_file() and all(metric in metrics for metric in METRICS)
+        tail_filename = str(task.eval.get("per_class_metrics_file", "")).strip()
+        tail = read_tail_breakdown(run_dir, tail_filename) if tail_filename else {}
+        tail_complete = not tail_filename or set(tail) == {"Many", "Medium", "Few"}
+        complete = (run_dir / "SUCCESS").is_file() and all(metric in metrics for metric in METRICS) and tail_complete
         row = {
             "dataset": task.dataset["name"], "method": task.method, "seed": int(task.seed),
             "adapter": task.adapter, "status": "complete" if complete else "MISSING", "run_dir": str(run_dir),
@@ -85,12 +103,25 @@ def main() -> int:
         }
         rows.append(row)
         grouped[(row["dataset"], row["method"])].append(row)
+        for group_name, group_values in tail.items():
+            tail_rows.append({
+                "dataset": task.dataset["name"], "method": task.method, "seed": int(task.seed),
+                "group": group_name, "FID": finite(group_values.get("FID")),
+                "generated": int(group_values.get("generated", 0)), "reference": int(group_values.get("reference", 0)),
+                "run_dir": str(run_dir),
+            })
 
     per_seed_columns = ["dataset", "method", "adapter", "seed", "status", *METRICS, "run_dir"]
     with (output / "per_seed.csv").open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=per_seed_columns)
         writer.writeheader()
         writer.writerows(sorted(rows, key=lambda row: (row["dataset"], row["method"], row["seed"])))
+
+    tail_columns = ["dataset", "method", "seed", "group", "FID", "generated", "reference", "run_dir"]
+    with (output / "tail_per_seed.csv").open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=tail_columns)
+        writer.writeheader()
+        writer.writerows(sorted(tail_rows, key=lambda row: (row["dataset"], row["method"], row["group"], row["seed"])))
 
     summary: list[dict[str, Any]] = []
     by_key: dict[tuple[str, str], dict[str, Any]] = {}
@@ -119,8 +150,22 @@ def main() -> int:
                       if row[f"{metric}_mean"] is not None}
             for method, rank in ranks(scores, METRIC_DIRECTIONS[metric]).items():
                 by_key[(dataset, method)][f"{metric}_rank"] = rank
-        for row in complete_rows:
-            row["mean_metric_rank"] = sum(row[f"{metric}_rank"] for metric in METRICS) / len(METRICS)
+
+    tail_summary: list[dict[str, Any]] = []
+    tail_grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    for row in tail_rows:
+        tail_grouped[(row["dataset"], row["method"], row["group"])].append(row)
+    for (dataset, method, group_name), group_rows in sorted(tail_grouped.items()):
+        by_seed = {int(row["seed"]): float(row["FID"]) for row in group_rows if row["FID"] is not None}
+        mean, std = mean_std(list(by_seed.values()))
+        counts = {(int(row["generated"]), int(row["reference"])) for row in group_rows}
+        tail_summary.append({
+            "dataset": dataset, "method": method, "group": group_name,
+            "completed": len(by_seed), "expected": len(expected_seeds),
+            "complete": sorted(by_seed) == expected_seeds,
+            "FID_mean": mean, "FID_std": std, "seed_values": by_seed,
+            "sample_counts": sorted({f"generated={generated}, reference={reference}" for generated, reference in counts}),
+        })
 
     serializable = []
     for item in summary:
@@ -132,6 +177,7 @@ def main() -> int:
         "claim_status": "UNIFIED_BASELINE_TABLE_NOT_A_PAPER_REPRODUCTION",
         "metric_definitions": {
             "FID": "balanced CIFAR-train Inception reference; lower is better",
+            "KID": "deterministic CM-style cubic-kernel MMD on the same pinned Inception features; lower is better",
             "IS": "Inception Score; higher is better",
             "F_8": "Inception PRD F_8; higher is better",
             "F_1_8": "Inception PRD F_1/8; higher is better",
@@ -141,6 +187,7 @@ def main() -> int:
         "fairness_contract": campaign.raw.get("fairness_contract", {}),
         "per_seed": rows,
         "aggregate": serializable,
+        "tail_breakdown": tail_summary,
     }
     (output / "summary.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
@@ -151,22 +198,37 @@ def main() -> int:
         "Every cell requires seeds 0/1/2, 200k updates, 50k exact class-uniform generated labels, and the same evaluator.",
         "Each value is mean ± sample standard deviation across the three training seeds. Missing inputs remain `MISSING`.",
         "",
-        "| Data | Method | Seeds | FID ↓ | IS ↑ | F₈ ↑ | F₁⁄₈ ↑ | IPR precision ↑ | IPR recall ↑ | FID rank | Mean rank |",
+        "| Data | Method | Seeds | FID ↓ | KID ↓ | IS ↑ | F₈ ↑ | F₁⁄₈ ↑ | IPR precision ↑ | IPR recall ↑ | FID rank |",
         "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for row in sorted(summary, key=lambda item: (item["dataset"], item["method"])):
         metrics = [fmt(row[f"{metric}_mean"], row[f"{metric}_std"]) for metric in METRICS]
-        mean_rank = row.get("mean_metric_rank")
         lines.append(
             f"| {row['dataset']} | {row['method']} | {row['completed']}/{row['expected']} | "
             + " | ".join(metrics)
-            + f" | {row.get('FID_rank', '—')} | {'—' if mean_rank is None else f'{mean_rank:.2f}'} |"
+            + f" | {row.get('FID_rank', '—')} |"
         )
     lines += [
         "",
-        "`IPR` is improved-PRD on VGG16 fc2 with exact k-NN radius k=3. F₈/F₁⁄₈ are Inception PRD endpoints.",
+        "`IPR` is improved-PRD on VGG16 fc2 with exact k-NN radius k=3. F₈/F₁⁄₈ are Inception PRD endpoints. KID is a deterministic CM-style cubic-kernel estimate (100 subsets, at most 1,000 features each).",
     ]
     (output / "table.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    tail_lines = [
+        "# Long-tail FID breakdown",
+        "",
+        "These are auxiliary FIDs on the **same 50k class-uniform samples** used for the main table. They are not CM Table-3 reproductions, because CM evaluates separately sampled 20k images per split.",
+        "",
+        "| Data | Method | Split | Seeds | FID ↓ | Generated / reference images |",
+        "|---|---|---|---:|---:|---|",
+    ]
+    group_order = {"Many": 0, "Medium": 1, "Few": 2}
+    for row in sorted(tail_summary, key=lambda item: (item["dataset"], item["method"], group_order.get(item["group"], 99))):
+        tail_lines.append(
+            f"| {row['dataset']} | {row['method']} | {row['group']} | {row['completed']}/{row['expected']} | "
+            f"{fmt(row['FID_mean'], row['FID_std'])} | {'; '.join(row['sample_counts'])} |"
+        )
+    (output / "tail_breakdown.md").write_text("\n".join(tail_lines) + "\n", encoding="utf-8")
 
     incomplete = [item for item in summary if not item["complete"]]
     if args.wandb:
@@ -182,9 +244,12 @@ def main() -> int:
             run.log({"comparison/per_seed": wandb.Table(
                 columns=per_seed_columns, data=[[row.get(key) for key in per_seed_columns] for row in rows]
             )})
+            run.log({"comparison/tail_fid_per_seed": wandb.Table(
+                columns=tail_columns, data=[[row.get(key) for key in tail_columns] for row in tail_rows]
+            )})
             summary_columns = ["dataset", "method", "complete", "completed", "expected", *[
                 field for metric in METRICS for field in (f"{metric}_mean", f"{metric}_std", f"{metric}_rank")
-            ], "mean_metric_rank"]
+            ]]
             run.log({"comparison/unified_main_table": wandb.Table(
                 columns=summary_columns, data=[[row.get(key) for key in summary_columns] for row in summary]
             )})
@@ -194,7 +259,7 @@ def main() -> int:
                     if value is not None:
                         run.summary[f"table/{row['dataset']}/{row['method']}/{metric}"] = value
             artifact = wandb.Artifact(f"{campaign.raw['campaign']['name']}-report", type="evaluation-report")
-            for path in (output / "per_seed.csv", output / "table.md", output / "summary.json"):
+            for path in (output / "per_seed.csv", output / "tail_per_seed.csv", output / "table.md", output / "tail_breakdown.md", output / "summary.json"):
                 artifact.add_file(str(path))
             run.log_artifact(artifact)
             run.summary["table/incomplete_cells"] = len(incomplete)

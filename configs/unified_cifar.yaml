@@ -72,6 +72,16 @@ common_eval: &common_eval
   metric_protocol: unified_cifar_v1
   paper_metrics: true
   metrics_file: metrics.unified.json
+  # KID uses the CM cubic-kernel estimator over the same pinned Inception
+  # features/reference as FID.  The seed controls only its subset draws.
+  kid: true
+  kid_subsets: 100
+  kid_subset_size: 1000
+  kid_seed: 2026
+  # This creates an auxiliary tail breakdown, not a second main-table metric.
+  # It contains per-class FID plus CM's Many/Medium/Few class groups.
+  per_class_metrics_file: metrics.per_class.json
+  longtail_groups: cm_three_way
 
 stages:
   - name: c10_if100_core

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed CM report with paper deltas and paired-seed comparisons."""
+"""Fail-closed released-code CM sensitivity report with paper deltas."""
 from __future__ import annotations
 
 import argparse
@@ -149,8 +149,9 @@ def main() -> None:
     }
     (out / "summary.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
-    lines = ["# CM long-tail baseline comparison", "", f"Claim status: `{claim_status}`.",
-             "Paper deltas are `this run − paper`; lower is better for FID/KID.",
+    lines = ["# CM released-code sensitivity comparison", "", f"Claim status: `{claim_status}`.",
+             "This source-port campaign is not a literal CM paper-table reproduction; paper deltas are diagnostic only (`this run − paper`).",
+             "Lower is better for FID/KID.",
              "A positive candidate advantage means the configured candidate is better; `WIN` requires paired-seed bootstrap 95% CI > 0.", ""]
     for dataset, resolution in sorted({(row["dataset"], row["resolution"]) for row in summary}):
         lines += [f"## {dataset} @ {resolution}×{resolution}", "",

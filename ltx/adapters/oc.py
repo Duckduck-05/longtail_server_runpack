@@ -58,8 +58,20 @@ class OCAdapter(Adapter):
         ]
         if task.eval.get("paper_metrics", False):
             metrics_file = str(task.eval.get("metrics_file", "metrics.paper.json"))
-            phases.append(Phase("paper_metrics", [py, str(self.root / "tools" / "evaluate_coral2025.py"),
+            metric_cmd = [py, str(self.root / "tools" / "evaluate_coral2025.py"),
                 "--repo", str(Path(task.runtime["repos_root"]) / "CBDM-pytorch"), "--data-type", str(task.dataset["data_type"]),
                 "--samples", str(samples), "--labels", str(labels), "--metrics-root", str(Path(task.runtime["repos_root"]) / "CBDM-pytorch" / "stats"),
-                "--output", str(run_dir / metrics_file)], self.root, skip_if_exists=[run_dir / metrics_file]))
+                "--output", str(run_dir / metrics_file)]
+            if task.eval.get("kid", False):
+                metric_cmd += ["--kid", "--kid-subsets", str(task.eval.get("kid_subsets", 100)),
+                               "--kid-subset-size", str(task.eval.get("kid_subset_size", 1000)),
+                               "--kid-seed", str(task.eval.get("kid_seed", 2026))]
+            per_class_file = str(task.eval.get("per_class_metrics_file", "")).strip()
+            if per_class_file:
+                metric_cmd += ["--per-class-output", str(run_dir / per_class_file),
+                               "--longtail-groups", str(task.eval.get("longtail_groups", "none"))]
+            outputs = [run_dir / metrics_file]
+            if per_class_file:
+                outputs.append(run_dir / per_class_file)
+            phases.append(Phase("paper_metrics", metric_cmd, self.root, skip_if_exists=outputs))
         return phases
