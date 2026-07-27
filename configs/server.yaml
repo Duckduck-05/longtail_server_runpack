@@ -1,0 +1,30 @@
+machine:
+  gpu_ids: auto                 # e.g. [0,1,2,3,4,5,6,7]
+  max_concurrent: auto
+  min_free_gpu_memory_gb: 0
+  poll_seconds: 20
+  heartbeat_seconds: 30
+  disk_stop_free_gb: 0
+  shutdown_grace_seconds: 45
+  one_task_per_gpu: true
+
+runtime:
+  python: python
+  repos_root: ${LTX_REPOS_ROOT:-./third_party}
+  runs_root: ${LTX_RUNS_ROOT:-./runs}
+  data_root: ${LTX_DATA_ROOT:-./data}
+  wandb_project: ${WANDB_PROJECT:-longtail}
+  wandb_entity: ${WANDB_ENTITY:-}
+  wandb_mode: ${WANDB_MODE:-online}
+  log_system_every_seconds: 30
+  log_tensorboard_every_seconds: 60
+  upload_sample_grids: true
+  upload_final_checkpoint: false
+  upload_stdout_artifact: true
+  fail_on_dirty_repo: false
+
+retry:
+  max_attempts: 2
+  retry_exit_codes: [1, 137, 143]
+  retry_delay_seconds: 60
+  oom_batch_sizes: [128, 96, 64, 48, 32]

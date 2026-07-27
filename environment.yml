@@ -1,0 +1,40 @@
+# Reproducible CUDA environment for the standalone CM + CORAL runpack.
+#
+# Derived from the checked-in Longtail requirements and the pinned upstream
+# CM/CORAL source requirements.  Longtail itself has no environment.yml to
+# copy; this file intentionally contains only runtime packages, not a dump of
+# another machine's unrelated applications or credentials.
+name: longtail-cm-coral
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+dependencies:
+  # Keep Python below 3.12: the pinned research sources and TensorBoardX are
+  # exercised against this interpreter in the runpack.
+  - python=3.11.11
+  - pip=25.0
+  - setuptools=80.9
+  - wheel=0.45
+
+  # CUDA runtime is conda-managed; do not let pip replace these wheels.
+  - pytorch=2.5.1
+  - torchvision=0.20.1
+  - pytorch-cuda=12.1
+
+  # Numeric/image/metric stack used during train, FID and KID evaluation.
+  - numpy=1.26.4
+  - scipy=1.13.1
+  - scikit-learn=1.5.2
+  - pillow=10.4.0
+  - pyyaml=6.0.2
+  - tqdm=4.67.1
+  - tensorboard=2.18.0
+  - pip:
+      # Vendored CM/CORAL entrypoints and runpack orchestration.
+      - absl-py==2.1.0
+      - tensorboardX==2.6.2.2
+      - wandb==0.19.6
+      - psutil==6.1.1
+      - jsonschema==4.23.0
+      - pytest==8.3.4
