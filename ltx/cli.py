@@ -120,13 +120,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="ltx")
     sub = parser.add_subparsers(dest="command", required=True)
     for name in ("preflight", "plan", "stop", "aggregate"):
-        p = sub.add_parser(name); p.add_argument("--config", default="configs/deadline_full.yaml")
-    status = sub.add_parser("status"); status.add_argument("--config", default="configs/deadline_full.yaml")
+        p = sub.add_parser(name); p.add_argument("--config", default="configs/unified_cifar.yaml")
+    status = sub.add_parser("status"); status.add_argument("--config", default="configs/unified_cifar.yaml")
     status.add_argument("--watch", type=int, default=0, help="refresh every N seconds")
-    retry_failed = sub.add_parser("retry-failed"); retry_failed.add_argument("--config", default="configs/deadline_full.yaml")
+    retry_failed = sub.add_parser("retry-failed"); retry_failed.add_argument("--config", default="configs/unified_cifar.yaml")
     retry_failed.add_argument("--stage", default=None)
     run = sub.add_parser("run")
-    run.add_argument("--config", default="configs/deadline_full.yaml")
+    run.add_argument("--config", default="configs/unified_cifar.yaml")
     run.add_argument("--skip-preflight", action="store_true")
     args = parser.parse_args()
     handlers = {

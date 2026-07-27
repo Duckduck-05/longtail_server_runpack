@@ -2,4 +2,4 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"; source "${LTX_VENV:-$ROOT/.venv}/bin/activate"
-python -m ltx.cli aggregate --config "${1:-configs/deadline_full.yaml}"
+python tools/report_unified_cifar.py --config "${1:-configs/unified_cifar.yaml}" --wandb

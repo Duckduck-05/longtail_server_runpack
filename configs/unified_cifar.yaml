@@ -1,0 +1,161 @@
+# Unified Benchmark v1 — a new, source-native comparison protocol.
+#
+# This is deliberately *not* a merged reproduction of any paper table.  All
+# rows train from scratch on the same three public CIFAR-LT cells, use exactly
+# the same three seeds and update budget, generate 50k class-uniform samples,
+# and are scored by one evaluator.  OC is the upstream repository name of the
+# T2H method, so it appears once as ``t2h`` rather than as a duplicate row.
+campaign:
+  name: unified_cifar_v1
+  description: "Fair source-native comparison: DDPM, CBDM, T2H, CM, CORAL"
+  protocol: unified_cifar_v1
+  server_config: configs/server.yaml
+  paired_seeds: [0, 1, 2]
+  default_priority: 100
+  strict_preflight: true
+
+fairness_contract:
+  cells: [cifar10lt_if100, cifar10lt_if1000, cifar100lt_if100]
+  methods: [ddpm, cbdm, t2h, cm, coral]
+  seeds: [0, 1, 2]
+  train_updates: 200000
+  train_batch_size: 64
+  learning_rate: 0.0002
+  diffusion_steps: 1000
+  generated_images: 50000
+  conditional_label_schedule: cyclic_class_uniform
+  sampler_family: ancestral_ddpm
+  metric_protocol: unified_cifar_v1
+
+repositories:
+  coral:
+    url: https://github.com/SankarLab/coral-lt-diffusion.git
+    commit: 62c9dfad2da13f5be0f28975e5cd36727c1acc7a
+    directory: coral-lt-diffusion
+  cbdm:
+    url: https://github.com/qym7/CBDM-pytorch.git
+    commit: 513f7fffe7369343499611a8f68212a8b40f11a1
+    directory: CBDM-pytorch
+  oc:
+    url: https://github.com/MediaBrain-SJTU/OC_LT.git
+    commit: ced184378e8dc784958b6e14fd687781babd836d
+    directory: OC_LT
+  cm:
+    url: https://github.com/Feng-Hong/ImbDiff-CM.git
+    commit: 04262d7efc4130fda551fa1a1a22d8d5af636899
+    directory: ImbDiff-CM
+
+# Every adapter receives these exact settings.  The CM loop needs an inclusive
+# endpoint flag because its released CLI uses a half-open ``range``.
+common_train: &common_train
+  total_steps: 200000
+  inclusive_final_step: true
+  batch_size: 64
+  lr: 0.0002
+  warmup: 5000
+  T: 1000
+  dropout: 0.1
+  num_workers: 4
+  save_step: 100000
+  sample_step: 100000
+  conditional: true
+  cfg: true
+  amp: false
+
+common_eval: &common_eval
+  checkpoint_step: 200000
+  num_images: 50000
+  sample_batch_size: 64
+  guidance_scale: 1.0
+  uniform_labels: true
+  sampler_family: ancestral_ddpm
+  metric_protocol: unified_cifar_v1
+  paper_metrics: true
+  metrics_file: metrics.unified.json
+
+stages:
+  - name: c10_if100_core
+    adapter: coral
+    dataset: {name: cifar10lt_if100, data_type: cifar10lt, imbalance_factor: 0.01, split_seed: 0, root: "${LTX_DATA_ROOT:-./data}"}
+    train: *common_train
+    eval: {<<: *common_eval, sample_method: cfg}
+    methods:
+      - {name: ddpm}
+      - {name: cbdm, flags: [--cb, --tau=1.0]}
+      - {name: coral, flags: [--supcon, --supcon_weight=0.01, --supcon_temp=0.12, --temperature_scaling=0.8]}
+    seeds: [0, 1, 2]
+    tags: [unified-cifar-v1, cifar10lt, if100, core]
+  - name: c10_if100_t2h
+    adapter: oc
+    dataset: {name: cifar10lt_if100, data_type: cifar10lt, imbalance_factor: 0.01, split_seed: 0, num_class: 10, root: "${LTX_DATA_ROOT:-./data}"}
+    train: *common_train
+    eval: {<<: *common_eval, sample_method: ddpm, ddim_skip_step: 1}
+    methods: [{name: t2h}]
+    seeds: [0, 1, 2]
+    tags: [unified-cifar-v1, cifar10lt, if100, t2h]
+  - name: c10_if100_cm
+    adapter: cm
+    dataset: {name: cifar10lt_if100, data_type: cifar10lt, imbalance_factor: 0.01, split_seed: 0, num_classes: 10, img_size: 32, root: "${LTX_DATA_ROOT:-./data}"}
+    train: *common_train
+    eval: {<<: *common_eval, sample_method: ddpm, ddim_skip_step: 1}
+    methods: [{name: cm, upstream_method: cm}]
+    seeds: [0, 1, 2]
+    tags: [unified-cifar-v1, cifar10lt, if100, cm]
+
+  - name: c10_if1000_core
+    adapter: coral
+    dataset: {name: cifar10lt_if1000, data_type: cifar10lt, imbalance_factor: 0.001, split_seed: 0, root: "${LTX_DATA_ROOT:-./data}"}
+    train: *common_train
+    eval: {<<: *common_eval, sample_method: cfg}
+    methods:
+      - {name: ddpm}
+      - {name: cbdm, flags: [--cb, --tau=1.0]}
+      - {name: coral, flags: [--supcon, --supcon_weight=0.01, --supcon_temp=0.10, --temperature_scaling=1.0]}
+    seeds: [0, 1, 2]
+    tags: [unified-cifar-v1, cifar10lt, if1000, core]
+  - name: c10_if1000_t2h
+    adapter: oc
+    dataset: {name: cifar10lt_if1000, data_type: cifar10lt, imbalance_factor: 0.001, split_seed: 0, num_class: 10, root: "${LTX_DATA_ROOT:-./data}"}
+    train: *common_train
+    eval: {<<: *common_eval, sample_method: ddpm, ddim_skip_step: 1}
+    methods: [{name: t2h}]
+    seeds: [0, 1, 2]
+    tags: [unified-cifar-v1, cifar10lt, if1000, t2h]
+  - name: c10_if1000_cm
+    adapter: cm
+    dataset: {name: cifar10lt_if1000, data_type: cifar10lt, imbalance_factor: 0.001, split_seed: 0, num_classes: 10, img_size: 32, root: "${LTX_DATA_ROOT:-./data}"}
+    train: *common_train
+    eval: {<<: *common_eval, sample_method: ddpm, ddim_skip_step: 1}
+    methods: [{name: cm, upstream_method: cm}]
+    seeds: [0, 1, 2]
+    tags: [unified-cifar-v1, cifar10lt, if1000, cm]
+
+  - name: c100_if100_core
+    adapter: coral
+    dataset: {name: cifar100lt_if100, data_type: cifar100lt, imbalance_factor: 0.01, split_seed: 0, root: "${LTX_DATA_ROOT:-./data}"}
+    train: *common_train
+    eval: {<<: *common_eval, sample_method: cfg}
+    methods:
+      - {name: ddpm}
+      - {name: cbdm, flags: [--cb, --tau=1.0]}
+      - {name: coral, flags: [--supcon, --supcon_weight=0.01, --supcon_temp=0.09, --temperature_scaling=1.0]}
+    seeds: [0, 1, 2]
+    tags: [unified-cifar-v1, cifar100lt, if100, core]
+  - name: c100_if100_t2h
+    adapter: oc
+    dataset: {name: cifar100lt_if100, data_type: cifar100lt, imbalance_factor: 0.01, split_seed: 0, num_class: 100, root: "${LTX_DATA_ROOT:-./data}"}
+    train: *common_train
+    eval: {<<: *common_eval, sample_method: ddpm, ddim_skip_step: 1}
+    methods: [{name: t2h}]
+    seeds: [0, 1, 2]
+    tags: [unified-cifar-v1, cifar100lt, if100, t2h]
+  - name: c100_if100_cm
+    adapter: cm
+    dataset: {name: cifar100lt_if100, data_type: cifar100lt, imbalance_factor: 0.01, split_seed: 0, num_classes: 100, img_size: 32, root: "${LTX_DATA_ROOT:-./data}"}
+    train: *common_train
+    eval: {<<: *common_eval, sample_method: ddpm, ddim_skip_step: 1}
+    methods: [{name: cm, upstream_method: cm}]
+    seeds: [0, 1, 2]
+    tags: [unified-cifar-v1, cifar100lt, if100, cm]
+
+aggregation: {enabled: false}

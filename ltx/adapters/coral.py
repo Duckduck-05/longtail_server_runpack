@@ -93,16 +93,18 @@ class CoralAdapter(Adapter):
                 self._flag("omega", omega), self._flag("sample_name", sample_name),
             ]
             if train.get("conditional", True): eval_cmd.append("--conditional")
+            if evaluate.get("uniform_labels", False): eval_cmd.append("--uniform_labels")
             if evaluate.get("prd", False): eval_cmd.append("--prd")
             if evaluate.get("improved_prd", False): eval_cmd.append("--improved_prd")
             if not evaluate.get("standard_metrics", True): eval_cmd.append("--sample_only")
             phases.append(Phase(f"eval_w{omega}", eval_cmd, repo, skip_if_exists=[samples]))
             if evaluate.get("paper_metrics", False):
                 labels = Path(str(samples).replace("_samples_", "_labels_"))
+                metrics_file = str(evaluate.get("metrics_file", "metrics.paper.json"))
                 phases.append(Phase(f"paper_metrics_w{omega}", [py, str(self.root / "tools" / "evaluate_coral2025.py"),
                     "--repo", str(Path(task.runtime["repos_root"]) / "CBDM-pytorch"), "--data-type", str(task.dataset["data_type"]),
                     "--samples", str(samples), "--labels", str(labels), "--metrics-root", str(Path(task.runtime["repos_root"]) / "CBDM-pytorch" / "stats"),
-                    "--output", str(run_dir / "metrics.paper.json")], self.root, skip_if_exists=[run_dir / "metrics.paper.json"]))
+                    "--output", str(run_dir / metrics_file)], self.root, skip_if_exists=[run_dir / metrics_file]))
 
         if task.semantic_eval_command:
             omega = scales[-1]

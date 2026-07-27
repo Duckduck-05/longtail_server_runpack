@@ -24,6 +24,7 @@ flags.DEFINE_bool('train', False, help='train from scratch')
 flags.DEFINE_bool('eval', False, help='load ckpt.pt and evaluate FID and IS')
 flags.DEFINE_bool('sample_only', False, help='save generated arrays without upstream metrics')
 flags.DEFINE_string('sample_output', '', help='absolute .npy path for generated arrays')
+flags.DEFINE_bool('uniform_labels', False, help='sample an exact class-uniform label schedule')
 
 
 # UNet
@@ -124,7 +125,10 @@ def evaluate(sampler, model,save=True,use_eval=True,save_intermediate=False):
             x_T = torch.randn((batch_size, 3, FLAGS.img_size, FLAGS.img_size))  
             #change it to corresponding label
 
-            y = torch.randint(FLAGS.num_class, size=(x_T.shape[0], ),device=device)
+            if FLAGS.uniform_labels:
+                y = torch.arange(i, i + batch_size, device=device) % FLAGS.num_class
+            else:
+                y = torch.randint(FLAGS.num_class, size=(x_T.shape[0], ),device=device)
 
             batch_images = sampler(x_T.to(device),y,method=FLAGS.sample_method,skip=FLAGS.ddim_skip_step).cpu()
             images.append((batch_images + 1) / 2)

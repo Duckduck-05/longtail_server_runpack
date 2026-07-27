@@ -5,7 +5,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-ENV_NAME="${LTX_CONDA_ENV:-longtail-cm-coral}"
+ENV_NAME="${LTX_CONDA_ENV:-longtail-unified-cifar}"
 if [[ -n "${PYTHON_BIN:-}" ]]; then
   candidate="$PYTHON_BIN"
 elif command -v conda >/dev/null 2>&1; then
@@ -29,6 +29,6 @@ else
 fi
 
 export PYTHON_BIN="$candidate"
-# The default hand-off command runs both accepted-paper baseline suites.
-bash scripts/run_cm_baselines.sh
-exec bash scripts/run_coral2025_cifar.sh
+# The hand-off command runs one fair table, not a concatenation of paper
+# reproductions with incompatible budgets and metrics.
+exec bash scripts/run_unified_cifar.sh

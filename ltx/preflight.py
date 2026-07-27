@@ -274,6 +274,11 @@ def run_preflight(campaign: LoadedCampaign) -> List[Check]:
         checks.append(Check("ERROR", "coral-patch", "v2 sampler/sample_only patch marker missing"))
     if oc_dir.exists() and not (oc_dir / ".ltx_seed_resume_patch_v2").exists():
         checks.append(Check("ERROR", "oc-patch", "v2 seed/resume patch marker missing"))
+    uniform_patch = repo_root / ".ltx_uniform_eval_labels_patch_v1"
+    if coral_dir.exists() and oc_dir.exists() and not uniform_patch.exists():
+        checks.append(Check("ERROR", "uniform-eval-labels", "exact class-uniform evaluation-label patch marker missing"))
+    elif coral_dir.exists() and oc_dir.exists():
+        checks.append(Check("PASS", "uniform-eval-labels", "all conditional methods use exact class-uniform 50k labels"))
     cm_train = cm_dir / "tools" / "train.py"
     if cm_dir.exists() and (not cm_train.is_file() or "--ckpt_step" not in cm_train.read_text(encoding="utf-8")):
         checks.append(Check("ERROR", "cm-resume", "upstream --ckpt_step resume support is missing"))
@@ -284,6 +289,11 @@ def run_preflight(campaign: LoadedCampaign) -> List[Check]:
         checks.append(Check("ERROR", "cm-resume", "CM resume-next-step/fixed-noise/RNG patch is missing; run bootstrap"))
     elif cm_dir.exists():
         checks.append(Check("PASS", "cm-resume", "checkpoint resume starts at next update and restores fixed sampling noise/RNG state"))
+    if cm_dir.exists() and any(task.adapter == "cm" and task.eval.get("metric_protocol") == "unified_cifar_v1" for task in campaign.tasks):
+        if not (cm_dir / ".ltx_cm_array_export_patch_v1").exists():
+            checks.append(Check("ERROR", "cm-unified-export", "CM direct sample-array export patch marker missing"))
+        else:
+            checks.append(Check("PASS", "cm-unified-export", "CM exports float32 arrays directly to the shared evaluator"))
     if campaign.raw.get("campaign", {}).get("paper_protocol") in {"cm_imagenet_lt_fid_kid", "cm_baselines_fid_kid"}:
         if not cm_dir.exists() or not (cm_dir / ".ltx_cm_imagenet_lt_patch_v1").is_file():
             checks.append(Check("ERROR", "cm-imagenet-port", "CM ImageNet-LT loader patch marker missing; run bootstrap"))
@@ -317,7 +327,11 @@ def run_preflight(campaign: LoadedCampaign) -> List[Check]:
 
     critical = [t for t in campaign.tasks if t.stage == campaign.raw.get("aggregation", {}).get("semantic_primary_stage", "decisive_semantic_gate")]
     if critical: checks.extend(_check_semantic_bundle(campaign, critical))
-    if cm_dir.exists():
+    needs_cm_native_metrics = any(
+        task.adapter == "cm" and task.eval.get("metric_protocol") != "unified_cifar_v1"
+        for task in campaign.tasks
+    )
+    if cm_dir.exists() and needs_cm_native_metrics:
         cm_weight = cm_dir / "stats" / "pt_inception-2015-12-05-6726825d.pth"
         cm_weight_metadata = cm_weight.with_name(cm_weight.name + ".ltx.json")
         if not cm_weight.is_file():
@@ -340,6 +354,7 @@ def run_preflight(campaign: LoadedCampaign) -> List[Check]:
     checks.append(Check("PASS" if len(ids) == len(set(ids)) else "ERROR", "task-ids", f"{len(ids)} unique tasks" if len(ids) == len(set(ids)) else "duplicate task IDs"))
     checks.extend(_check_coral_metric_assets(campaign))
     checks.extend(_check_coral2025_metric_protocol(campaign, repo_root))
+    checks.extend(_check_unified_cifar_contract(campaign, repo_root))
     return checks
 
 
@@ -359,6 +374,88 @@ def _check_coral2025_metric_protocol(campaign: LoadedCampaign, repo_root: Path) 
             checks.append(Check("PASS", "paper-t2h-metrics", "T2H exports generated arrays/labels to the shared five-metric evaluator"))
         else:
             checks.append(Check("ERROR", "paper-t2h-metrics", "T2H sample-export patch marker missing"))
+    return checks
+
+
+def _check_unified_cifar_contract(campaign: LoadedCampaign, repo_root: Path) -> List[Check]:
+    """Validate the new comparison before any expensive source-native run.
+
+    This intentionally validates equality of the controllable factors, rather
+    than pretending the five independently released method implementations are
+    byte-identical.  Any later YAML edit that reintroduces a hidden fourth seed,
+    different training budget, random label support, or a duplicate OC/T2H row
+    fails at launch time.
+    """
+    if campaign.raw.get("campaign", {}).get("protocol") != "unified_cifar_v1":
+        return []
+    checks: List[Check] = []
+    contract = campaign.raw.get("fairness_contract", {})
+    expected_cells = set(contract.get("cells", ()))
+    expected_methods = set(contract.get("methods", ()))
+    expected_seeds = sorted(map(int, contract.get("seeds", ())))
+    expected_adapters = {"ddpm": "coral", "cbdm": "coral", "coral": "coral", "t2h": "oc", "cm": "cm"}
+
+    methods = {task.method for task in campaign.tasks}
+    cells = {str(task.dataset.get("name")) for task in campaign.tasks}
+    if methods != expected_methods:
+        checks.append(Check("ERROR", "unified-methods", f"expected {sorted(expected_methods)}, found {sorted(methods)}"))
+    elif "oc" in methods:
+        checks.append(Check("ERROR", "unified-methods", "OC is an alias of T2H and must not appear as a second row"))
+    else:
+        checks.append(Check("PASS", "unified-methods", "DDPM/CBDM/T2H/CM/CORAL exactly once per cell"))
+    if cells != expected_cells:
+        checks.append(Check("ERROR", "unified-cells", f"expected {sorted(expected_cells)}, found {sorted(cells)}"))
+
+    errors: list[str] = []
+    by_cell: Dict[str, list] = {}
+    for cell in sorted(cells):
+        cell_tasks = [task for task in campaign.tasks if task.dataset.get("name") == cell]
+        by_cell[cell] = cell_tasks
+        if {task.method for task in cell_tasks} != expected_methods:
+            errors.append(f"{cell}: methods={sorted({task.method for task in cell_tasks})}")
+        for method in expected_methods:
+            seeds = sorted(task.seed for task in cell_tasks if task.method == method)
+            if seeds != expected_seeds:
+                errors.append(f"{cell}/{method}: seeds={seeds}")
+    if errors:
+        checks.append(Check("ERROR", "unified-matrix", "; ".join(errors)))
+    else:
+        checks.append(Check("PASS", "unified-matrix", f"{len(expected_cells)} cells × {len(expected_methods)} methods × {len(expected_seeds)} seeds = {len(campaign.tasks)} tasks"))
+
+    settings_errors: list[str] = []
+    updates = int(contract.get("train_updates", -1))
+    batch = int(contract.get("train_batch_size", -1))
+    lr = float(contract.get("learning_rate", -1))
+    diffusion_steps = int(contract.get("diffusion_steps", -1))
+    generated = int(contract.get("generated_images", -1))
+    for task in campaign.tasks:
+        prefix = f"{task.dataset.get('name')}/{task.method}"
+        if task.adapter != expected_adapters.get(task.method): settings_errors.append(f"{prefix}: adapter={task.adapter}")
+        if int(task.train.get("total_steps", -1)) != updates: settings_errors.append(f"{prefix}: updates")
+        if int(task.train.get("batch_size", -1)) != batch: settings_errors.append(f"{prefix}: batch")
+        if not np.isclose(float(task.train.get("lr", -1)), lr): settings_errors.append(f"{prefix}: lr")
+        if int(task.train.get("T", -1)) != diffusion_steps: settings_errors.append(f"{prefix}: T")
+        if int(task.eval.get("num_images", -1)) != generated: settings_errors.append(f"{prefix}: num_images")
+        if not task.eval.get("uniform_labels", False): settings_errors.append(f"{prefix}: uniform_labels")
+        if task.eval.get("sampler_family") != contract.get("sampler_family"): settings_errors.append(f"{prefix}: sampler")
+        if task.eval.get("metric_protocol") != contract.get("metric_protocol"): settings_errors.append(f"{prefix}: metrics")
+        if int(task.dataset.get("split_seed", -1)) != 0: settings_errors.append(f"{prefix}: split_seed")
+        if task.adapter == "cm" and not task.train.get("inclusive_final_step", False): settings_errors.append(f"{prefix}: CM inclusive endpoint")
+        if task.adapter in {"cm", "oc"} and int(task.eval.get("ddim_skip_step", -1)) != 1: settings_errors.append(f"{prefix}: ancestral step")
+    if settings_errors:
+        checks.append(Check("ERROR", "unified-controls", "; ".join(settings_errors)))
+    else:
+        checks.append(Check("PASS", "unified-controls", f"{updates} updates, batch={batch}, lr={lr:g}, T={diffusion_steps}, N={generated}, one evaluator"))
+
+    evaluator = campaign.root / "tools" / "evaluate_coral2025.py"
+    if evaluator.is_file():
+        checks.append(Check("PASS", "unified-evaluator", "shared FID/IS/PRD/improved-PRD evaluator present"))
+    else:
+        checks.append(Check("ERROR", "unified-evaluator", f"missing {evaluator}"))
+    if any(task.adapter == "oc" for task in campaign.tasks):
+        oc = repo_root / campaign.raw["repositories"]["oc"].get("directory", "OC_LT")
+        if not (oc / ".ltx_oc_sample_export_v1").exists():
+            checks.append(Check("ERROR", "unified-t2h-export", "T2H generated-array export patch missing"))
     return checks
 
 

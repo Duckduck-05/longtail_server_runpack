@@ -230,7 +230,7 @@ class GaussianDiffusionSampler(nn.Module):
 
         return model_mean, model_log_var
 
-    def forward(self, x_T, omega=0.0, method='cfg'):
+    def forward(self, x_T, omega=0.0, method='cfg', labels=None):
         """
         Algorithm 2.
         """
@@ -238,7 +238,13 @@ class GaussianDiffusionSampler(nn.Module):
         y = None
 
         if method == 'uncond':
+            if labels is not None:
+                raise ValueError('unconditional sampling cannot accept labels')
             y = None
+        elif labels is not None:
+            if labels.shape != (len(x_t),):
+                raise ValueError(f'labels must have shape ({len(x_t)},), got {tuple(labels.shape)}')
+            y = labels.to(x_t.device, dtype=torch.long)
         else:
             y = torch.randint(0, self.num_class, (len(x_t),)).to(x_t.device)
 

@@ -1,49 +1,49 @@
-# Runbook server — CM + CORAL long-tail baseline
+# Runbook — Unified CIFAR-LT table
 
-## Bàn giao
-
-Runpack là độc lập. `.env.local` nằm cạnh README đã có W&B credentials cho
-private hand-off; không in nội dung file đó vào terminal hay W&B config.
-
-Trên server CUDA nhận runpack, chạy đúng một lệnh:
+Trên server CUDA, ở root của runpack độc lập này chạy:
 
 ```bash
 bash scripts/run_server.sh
 ```
 
-Lệnh này tự dựng environment đã pin, bootstrap third-party ports, tải
-CIFAR-10/100, tải archive ImageNet ILSVRC2012 + public ImageNet-LT manifests,
-kiểm tra checksum/data contract, rồi chạy CM và CORAL từ scratch.
+Không cần clone `Longtail` hay thư mục nào khác. Lệnh tự tạo/cập nhật conda
+environment từ `environment.yml`, bootstrap các third-party đã vendored, đọc
+`.env.local`, tự tải CIFAR-10/CIFAR-100 bằng `torchvision`, tạo metric assets,
+rồi chạy/resume campaign 45 task.
 
-## Data contract
+## Campaign được khóa
 
-- CIFAR-10-LT và CIFAR-100-LT: `torchvision` tự tải.
-- ImageNet-LT: một ImageNet source duy nhất; ảnh được resize/crop lúc train
-  thành hai benchmark 32×32 và 64×64. Preflight bắt buộc 115,846 train rows,
-  1,000 classes, và reference split 20,000 ảnh (20/lớp).
-- Nếu endpoint ImageNet không truy cập được, dùng private mirror qua
-  `LTX_IMAGENET_SOURCE=custom_archive` cùng URL/SHA256 trong `.env.local`.
+- Cells: CIFAR-10-LT IF100, CIFAR-10-LT IF1000, CIFAR-100-LT IF100.
+- Methods: DDPM, CBDM, T2H, CM, CORAL.
+- Seeds: 0, 1, 2 cho mọi data × method.
+- Train: 200,000 updates; batch 64; LR 2e-4; T=1000; conditional CFG;
+  exponential LT split với `split_seed=0`.
+- Eval: 50,000 ảnh 32×32 với nhãn điều kiện đúng class-uniform, ancestral
+  DDPM 1,000 reverse steps, một shared evaluator cho FID/IS/F₈/F₁⁄₈/IPR.
 
-## Hai protocol tái lập tách biệt
+`OC` là tên repository của paper T2H; không được thêm `oc` thành một method
+thứ sáu. Preflight sẽ fail nếu matrix, seed, budget, sampler family, label
+schedule hoặc metric contract bị lệch.
 
-- CM: DDPM/CBDM/OC/CM × seeds 0,1,2 trên CIFAR-10-LT IR100,
-  CIFAR-100-LT IR100, ImageNet-LT 32 và ImageNet-LT 64: 48 tasks; source CM,
-  200k/300k steps, metric FID/KID.
-- CORAL: DDPM/CBDM/T2H/CORAL × seeds 0,1,2 trên ba CIFAR paper cells: 36 tasks;
-  source CORAL/OC, 150k/200k steps, metric FID/IS/F-score/Recall.
-- Đây **không phải một bảng chung**. DDPM/CBDM ở CIFAR IF100 xuất hiện hai lần
-  vì được tái lập theo hai paper protocol khác nhau; không so sánh/chung bình
-  metric hay reuse một run giữa hai suite.
-- Báo cáo fail-closed: thiếu seed hoặc metric thì không tạo bảng so sánh giả.
-- W&B và local reports: `runs/cm_baselines_v1/report/` và
-  `runs/coral2025_cifar_v1/report/`.
+## Theo dõi và kết quả
 
-Đây là **baseline-only**. Chỉ sau khi task của method mới được port thật và
-`LTX_CANDIDATE_METHOD` được đặt, report mới tính paired bootstrap CI và nhãn
-`WIN`.
+```bash
+source .venv/bin/activate
+python -m ltx.cli status --config configs/unified_cifar.yaml --watch 30
+```
 
-## Giới hạn được ghi rõ
+Kết quả paper-facing chỉ đọc từ:
 
-CM ImageNet-LT là source port có kiểm soát: public CM release không có YAML
-ImageNet-LT của tác giả. Vì vậy report dùng Table-5 làm reference, không tuyên
-bố tái lập bit-for-bit kết quả paper.
+```text
+runs/unified_cifar_v1/report/table.md
+runs/unified_cifar_v1/report/per_seed.csv
+runs/unified_cifar_v1/report/summary.json
+```
+
+W&B có năm run groups theo cell/method, loss và system telemetry theo task,
+sample grids, `comparison/per_seed`, `comparison/unified_main_table`, và
+report artifact. Report fail-closed nếu một trong ba seed hoặc metric bị thiếu.
+
+Không gọi kết quả này là “paper reproduction”: đây là protocol chung mới với
+source-native implementations. Chi tiết khoa học ở
+[UNIFIED_CIFAR_PROTOCOL.md](UNIFIED_CIFAR_PROTOCOL.md).

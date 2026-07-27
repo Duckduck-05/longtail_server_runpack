@@ -105,6 +105,7 @@ flags.DEFINE_string('sample_weights', '', help='optional .npy per-example sampli
 flags.DEFINE_string('frozen_manifest', '', help='optional immutable NPZ dataset in exact sample order')
 flags.DEFINE_integer('num_class_override', 0, help='override number of conditional classes')
 flags.DEFINE_bool('sample_only', False, help='generate/save arrays without built-in CIFAR FID/PRD evaluation')
+flags.DEFINE_bool('uniform_labels', False, help='sample an exact class-uniform label schedule during evaluation')
 
 device = torch.device('cuda')
 
@@ -162,9 +163,13 @@ def evaluate(sampler, model, sampled):
             for i in trange(0, FLAGS.num_images, FLAGS.batch_size, desc=desc):
                 batch_size = min(FLAGS.batch_size, FLAGS.num_images - i)
                 x_T = torch.randn((batch_size, 3, FLAGS.img_size, FLAGS.img_size))
+                forced_labels = None
+                if FLAGS.uniform_labels and FLAGS.sample_method != 'uncond':
+                    forced_labels = torch.arange(i, i + batch_size, device=device) % FLAGS.num_class
                 batch_images, batch_labels = sampler(x_T.to(device),
                                                      omega=FLAGS.omega,
-                                                     method=FLAGS.sample_method)
+                                                     method=FLAGS.sample_method,
+                                                     labels=forced_labels)
                 images.append((batch_images.cpu() + 1) / 2)
                 if FLAGS.sample_method!='uncond' and batch_labels is not None:
                     labels.append(batch_labels.cpu())

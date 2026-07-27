@@ -5,6 +5,7 @@ from pathlib import Path
 
 import torch
 import yaml
+import numpy as np
 from torchvision.utils import save_image
 from tqdm import trange
 
@@ -71,6 +72,8 @@ def main():
     parser.add_argument("--num_images", type=int, default=None)
     parser.add_argument("--batch_size", type=int, default=None)
     parser.add_argument("--device", default=None)
+    parser.add_argument("--samples_output", default=None, help="optional float32 NCHW .npy export")
+    parser.add_argument("--labels_output", default=None, help="optional int64 .npy export aligned with samples_output")
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -83,8 +86,22 @@ def main():
     if num_per_class == 0:
         raise ValueError(f"num_images must be at least num_classes ({num_classes}) for balanced sampling.")
     num_images = num_per_class * num_classes
+    if bool(args.samples_output) != bool(args.labels_output):
+        raise ValueError("--samples_output and --labels_output must be supplied together")
 
     output_dir.mkdir(parents=True, exist_ok=True)
+    sample_output = None
+    labels_output = None
+    if args.samples_output:
+        sample_path = Path(args.samples_output)
+        labels_path = Path(args.labels_output)
+        sample_path.parent.mkdir(parents=True, exist_ok=True)
+        labels_path.parent.mkdir(parents=True, exist_ok=True)
+        sample_output = np.lib.format.open_memmap(
+            sample_path, mode="w+", dtype=np.float32,
+            shape=(num_images, 3, config["dataset"]["img_size"], config["dataset"]["img_size"]),
+        )
+        labels_output = np.empty(num_images, dtype=np.int64)
 
     model = build_model(config).to(device)
     ckpt = torch.load(args.ckpt, map_location="cpu")
@@ -100,6 +117,9 @@ def main():
             x_t = torch.randn(current, 3, config["dataset"]["img_size"], config["dataset"]["img_size"], device=device)
             images = sampler(x_t, y, method=config["evaluation"]["sample_method"], skip=config["evaluation"]["ddim_skip_step"]).cpu()
             images = (images + 1) / 2
+            if sample_output is not None:
+                sample_output[start:start + current] = images.numpy().astype(np.float32, copy=False)
+                labels_output[start:start + current] = np.asarray(labels, dtype=np.int64)
             with ThreadPoolExecutor() as executor:
                 futures = []
                 for idx, image in enumerate(images):
@@ -108,6 +128,9 @@ def main():
                     futures.append(executor.submit(save_image, image, path))
                 for future in futures:
                     future.result()
+    if sample_output is not None:
+        sample_output.flush()
+        np.save(args.labels_output, labels_output)
 
 
 if __name__ == "__main__":

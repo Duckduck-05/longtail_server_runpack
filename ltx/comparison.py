@@ -13,6 +13,7 @@ METRIC_DIRECTIONS = {
     "F_8": "higher",
     "Recall": "higher",
     "F_1_8": "higher",
+    "ImprovedPrecision": "higher",
 }
 
 

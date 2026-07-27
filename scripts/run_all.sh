@@ -2,5 +2,8 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
-source "${LTX_VENV:-$ROOT/.venv}/bin/activate"
-exec python -m ltx.cli run --config "${1:-configs/deadline_full.yaml}"
+if [[ $# -gt 0 ]]; then
+  source "${LTX_VENV:-$ROOT/.venv}/bin/activate"
+  exec python -m ltx.cli run --config "$1"
+fi
+exec bash scripts/run_unified_cifar.sh

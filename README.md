@@ -1,59 +1,47 @@
-# Long-tail diffusion baseline runpack
+# Unified CIFAR-LT runpack
 
-Standalone private hand-off for CM and CORAL long-tail diffusion baselines.
-It includes vendored source, pinned environment, W&B configuration, automatic
-dataset preparation and reproducible reporting.
+This private, standalone package produces one fair, report-ready baseline
+table. It does not call another checkout and does not concatenate incompatible
+paper tables.
 
-## Run
-
-The private `.env.local` is included for the intended hand-off. On a CUDA
-server, run exactly:
+On a CUDA server, run one command:
 
 ```bash
 bash scripts/run_server.sh
 ```
 
-The command creates/updates the pinned CUDA environment, bootstraps the source
-ports, downloads CIFAR-10/100 and ImageNet-LT, validates data/checksums, then
-launches the full suites from scratch.
+It creates the pinned environment, loads the packaged `.env.local` W&B
+settings, downloads CIFAR-10/100 through `torchvision`, prepares the shared
+metric references, resumes safely when rerun, and launches the full campaign.
 
-## Two separate paper reproductions
+## What runs
 
-The command runs two **separate** suites and writes separate reports. They are
-not a single joint leaderboard: identical method names across suites are not
-interchangeable because the upstream implementation, training budget and metric
-protocol differ. Do not compare or average rows across the two reports.
+45 tasks: five methods × three datasets × seeds `0,1,2`.
 
-| Reproduction | Cells | Methods | Protocol |
-| --- | --- | --- | --- |
-| CM | CIFAR-10-LT IR100, CIFAR-100-LT IR100, ImageNet-LT 32/64 | DDPM, CBDM, OC, CM | CM source, 200k/300k steps, FID/KID |
-| CORAL | CIFAR-10-LT IF100/IF1000, CIFAR-100-LT IF100 | DDPM, CBDM, T2H, CORAL | CORAL/OC sources, 150k/200k steps, FID/IS/F-scores/Recall |
+| Data | Methods | Shared controls |
+|---|---|---|
+| CIFAR-10-LT IF100 | DDPM, CBDM, T2H, CM, CORAL | 200k updates; batch 64; LR 2e-4; U-Net base width 128; T=1000; 50k exact class-uniform samples |
+| CIFAR-10-LT IF1000 | DDPM, CBDM, T2H, CM, CORAL | same |
+| CIFAR-100-LT IF100 | DDPM, CBDM, T2H, CM, CORAL | same |
 
-Each has seeds `0,1,2`: 48 CM tasks and 36 CORAL tasks. CIFAR-10 IF100 and
-CIFAR-100 IF100 occur in both paper protocols; DDPM/CBDM are intentionally
-rerun there under each paper's own code and evaluation, not reused as the same
-baseline result.
+`OC` is not an extra sixth row: the official `OC_LT` repository calls its
+method T2H. Running both names would double-count the same method.
 
-CIFAR downloads through `torchvision`. ImageNet-LT downloads the original
-ILSVRC2012 training archive, expands `train/<synset>/*`, and fetches
-checksum-pinned long-tail manifests. See [data-source audit](IMAGE_NET_LT_SOURCE_AUDIT.md).
-
-## Results
-
-W&B receives loss, system state, samples, metrics and comparison tables.
-Local outputs are written to:
+Every completed row uses the same balanced CIFAR reference and reports FID,
+IS, F₈, F₁⁄₈, improved-PRD precision, and improved-PRD recall. The resulting
+single table is written to:
 
 ```text
-runs/cm_baselines_v1/report/table.md
-runs/coral2025_cifar_v1/report/table.md
+runs/unified_cifar_v1/report/table.md
+runs/unified_cifar_v1/report/per_seed.csv
+runs/unified_cifar_v1/report/summary.json
 ```
 
-Reports are fail-closed: a missing seed or metric fails the comparison rather
-than producing a partial table. This package is **baseline-only**; it does not
-claim a proposed method wins until that method is implemented as a task.
+The same per-seed and aggregate tables plus all task losses, samples, system
+metrics, resolved commands, and artifacts are uploaded to the configured W&B
+project. A missing seed or metric makes the report fail rather than silently
+publishing a partial comparison.
 
-## Notes
-
-CM's ImageNet-LT configuration is a controlled source port because the public
-CM release has no author-provided ImageNet-LT YAML. It is labelled as such in
-the reports. For full operational detail, read [RUNBOOK_VI.md](RUNBOOK_VI.md).
+This is a new controlled benchmark, so it must be described as such in a
+paper—not as a bit-for-bit reproduction of any individual paper table. Full
+method and protocol audit: [UNIFIED_CIFAR_PROTOCOL.md](UNIFIED_CIFAR_PROTOCOL.md).

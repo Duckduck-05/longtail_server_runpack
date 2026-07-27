@@ -2,4 +2,4 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"; source "${LTX_VENV:-$ROOT/.venv}/bin/activate"
-python -m ltx.cli status --config "${1:-configs/deadline_full.yaml}"
+python -m ltx.cli status --config "${1:-configs/unified_cifar.yaml}"

@@ -38,8 +38,10 @@ python patches/apply_coral_weighted_sampler.py "$REPOS_ROOT/coral-lt-diffusion"
 python patches/apply_oc_seed_patch.py "$REPOS_ROOT/OC_LT"
 python patches/apply_oc_metric_weights_patch.py "$REPOS_ROOT/OC_LT"
 python patches/apply_oc_sample_export.py "$REPOS_ROOT/OC_LT"
+python patches/apply_uniform_eval_labels.py "$REPOS_ROOT"
 python patches/apply_cbdm_metric_paths.py "$REPOS_ROOT/CBDM-pytorch"
 python patches/apply_cm_imagenet_lt.py "$REPOS_ROOT/ImbDiff-CM"
+python patches/apply_cm_array_export.py "$REPOS_ROOT/ImbDiff-CM"
 mkdir -p "$REPOS_ROOT/ImbDiff-CM/configs/imagenet_lt"
 cp patches/cm_imagenet_lt.yaml "$REPOS_ROOT/ImbDiff-CM/configs/imagenet_lt/cm.yaml"
 
@@ -82,4 +84,4 @@ PY
 mkdir -p "${LTX_RUNS_ROOT:-$ROOT/runs}" "${LTX_DATA_ROOT:-$ROOT/data}" "$ROOT/wandb"
 
 echo
-printf 'Bootstrap complete. The runner reads this runpack\047s .env.local (or $LTX_ENV_FILE).\n  source %q\n  python -m ltx.cli preflight --config configs/cm_imagenet_lt.yaml\n  bash scripts/run_server.sh\n' "$VENV/bin/activate"
+printf 'Bootstrap complete. The runner reads this runpack\047s .env.local (or $LTX_ENV_FILE).\n  source %q\n  python -m ltx.cli preflight --config configs/unified_cifar.yaml\n  bash scripts/run_server.sh\n' "$VENV/bin/activate"
