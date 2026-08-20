@@ -1,0 +1,4 @@
+# Third-party copyrighted PDFs are not redistributed with this runpack.
+# Re-fetch them with: bash papers/fetch_papers.sh
+*.pdf
+*.pdf.part

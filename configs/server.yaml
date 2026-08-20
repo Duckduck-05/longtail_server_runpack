@@ -1,12 +1,28 @@
 machine:
   gpu_ids: auto                 # e.g. [0,1,2,3,4,5,6,7]
-  max_concurrent: auto
+  max_concurrent: auto          # auto = sum of per-GPU slots below
   min_free_gpu_memory_gb: 0
   poll_seconds: 20
   heartbeat_seconds: 30
   disk_stop_free_gb: 0
   shutdown_grace_seconds: 45
-  one_task_per_gpu: true
+  # How many tasks may share one GPU. "auto" divides each GPU's free memory
+  # (minus gpu_memory_headroom_gb) by task_gpu_memory_gb, capped at
+  # max_tasks_per_gpu. Override with an integer to pin every GPU to that count.
+  tasks_per_gpu: auto
+  max_tasks_per_gpu: 4
+  # "auto" starts at 12 GB and self-corrects once a task's real footprint is
+  # observed (runs/<campaign>/**/gpu_footprint.json). Override with a number
+  # to skip the self-correction.
+  task_gpu_memory_gb: auto
+  gpu_memory_headroom_gb: 4
+  # nvidia-smi free-memory readings lag a freshly started task by a minute or
+  # two; staggering launches onto the same GPU avoids reading stale headroom
+  # and over-packing into an OOM.
+  same_gpu_launch_stagger_seconds: 120
+  # Dataloader workers per task are divided across however many tasks share
+  # the machine's CPUs right now, so packing GPUs doesn't oversubscribe CPU.
+  max_dataloader_workers: 8
 
 runtime:
   python: python

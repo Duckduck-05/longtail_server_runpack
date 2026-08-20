@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 from typing import List
 
-from .base import Adapter, Phase
+from .base import Adapter, Phase, resolve_num_workers
 from ..config import Task
 
 
@@ -50,7 +50,7 @@ class CoralAdapter(Adapter):
             self._flag("total_steps", total + 1), self._flag("save_step", train.get("save_step", 50000)),
             self._flag("sample_step", train.get("sample_step", 10000)), self._flag("eval_step", train.get("eval_step", 0)),
             self._flag("T", train.get("T", 1000)), self._flag("dropout", train.get("dropout", 0.1)),
-            self._flag("num_workers", train.get("num_workers", 8)),
+            self._flag("num_workers", resolve_num_workers(train, 8)),
         ]
         if train.get("conditional", True): train_cmd.append("--conditional")
         if train.get("cfg", True): train_cmd.append("--cfg")

@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 from typing import List
 
-from .base import Adapter, Phase
+from .base import Adapter, Phase, resolve_num_workers
 from ..config import Task
 
 
@@ -34,7 +34,7 @@ class OCAdapter(Adapter):
                      f"--sample_step={task.train.get('sample_step',10000)}",
                      f"--lr={task.train.get('lr', 2e-4)}", f"--T={task.train.get('T', 1000)}",
                      f"--dropout={task.train.get('dropout', 0.1)}", f"--warmup={task.train.get('warmup', 5000)}",
-                     f"--num_workers={task.train.get('num_workers', 4)}"]
+                     f"--num_workers={resolve_num_workers(task.train, 4)}"]
         latest = self.latest(run_dir, target)
         if latest:
             train_cmd += ["--resume", f"--resume_ckpt={run_dir}", f"--ckpt_step={latest}"]

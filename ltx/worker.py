@@ -19,7 +19,7 @@ import psutil
 
 from .adapters import make_adapter
 from .config import Task
-from .gpu import gpu_metrics
+from .gpu import gpu_metrics, query_compute_apps
 from .metrics import collect_metrics, latest_tensorboard_scalars
 from .state import StateDB
 from .utils import atomic_write_json, run_capture, shell_join, stable_id
@@ -37,16 +37,39 @@ class Monitor(threading.Thread):
         self.stop_event = threading.Event()
         self.last_images = set()
         self.last_tb_step: Dict[str, int] = {}
+        self.peak_memory_gb = 0.0
 
     def stop(self):
         self.stop_event.set()
+
+    def _write_footprint(self) -> None:
+        if self.peak_memory_gb > 0:
+            atomic_write_json(self.run_dir / "gpu_footprint.json", {
+                "task_id": self.task_id, "gpu_id": self.gpu_id, "peak_memory_gb": self.peak_memory_gb,
+            })
+
+    def finalize(self) -> None:
+        """Write the final footprint reading once the task has stopped."""
+        self._write_footprint()
 
     def run(self):
         while not self.stop_event.wait(self.interval):
             try:
                 disk = shutil.disk_usage(self.run_dir)
+                # Device-level GPU metrics are shared between any tasks packed
+                # onto the same card; also measure this task's own subprocess
+                # footprint so packing decisions and per-run W&B usage stay
+                # attributable to the right task.
+                try:
+                    descendant_pids = {p.pid for p in psutil.Process(os.getpid()).children(recursive=True)}
+                except Exception:
+                    descendant_pids = set()
+                proc_memory_mb = sum(mb for pid, mb in query_compute_apps().items() if pid in descendant_pids)
+                if proc_memory_mb > 0:
+                    self.peak_memory_gb = max(self.peak_memory_gb, proc_memory_mb / 1024)
                 metrics = {
                     **gpu_metrics(self.gpu_id),
+                    "system/proc_gpu_memory_gb": proc_memory_mb / 1024,
                     "system/cpu_pct": psutil.cpu_percent(interval=None),
                     "system/ram_used_gb": psutil.virtual_memory().used / (1024 ** 3),
                     "system/ram_pct": psutil.virtual_memory().percent,
@@ -72,6 +95,7 @@ class Monitor(threading.Thread):
                                 self.last_images.add(key)
                             except Exception:
                                 pass
+                self._write_footprint()
             except Exception:
                 continue
 
@@ -165,6 +189,25 @@ def write_provenance(task: Task, run_dir: Path, root: Path) -> None:
     atomic_write_json(run_dir / "provenance.json", payload)
 
 
+def resolve_batch_size(task: Task, attempt: int) -> Optional[int]:
+    """Pick the batch size for this attempt, honoring the fairness contract.
+
+    A retried task may fall back to a smaller batch after an OOM, but never to
+    one larger than the campaign's own configured batch, and never at all for
+    a task scored under the unified fairness contract: that table's whole
+    point is that every row shares one training budget, so a silently smaller
+    (or larger) batch on retry would publish an off-contract row instead.
+    """
+    contract_batch = int(task.train.get("batch_size", 128))
+    if task.eval.get("metric_protocol") == "unified_cifar_v1":
+        return None
+    oom_sizes = task.retry.get("oom_batch_sizes", [])
+    if attempt <= 1 or not oom_sizes:
+        return None
+    idx = min(attempt - 1, len(oom_sizes) - 1)
+    return min(int(oom_sizes[idx]), contract_batch)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--state", required=True)
@@ -179,7 +222,14 @@ def main() -> None:
     state.mark_started(task.id, os.getpid())
     run_dir = Path(task.run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
-    atomic_write_json(run_dir / "task.resolved.json", task.to_dict())
+
+    attempt = int(row.get("attempt", 1))
+    batch_size = resolve_batch_size(task, attempt)
+    effective_batch = batch_size if batch_size is not None else int(task.train.get("batch_size", 128))
+
+    resolved = task.to_dict()
+    resolved["effective_batch_size"] = effective_batch
+    atomic_write_json(run_dir / "task.resolved.json", resolved)
     write_provenance(task, run_dir, Path(args.root))
     (run_dir / "gpu.txt").write_text(str(args.gpu), encoding="utf-8")
 
@@ -193,6 +243,7 @@ def main() -> None:
     if wb_run is not None:
         wb_run.summary["status"] = "running"
         wb_run.summary["gpu_id"] = args.gpu
+        wb_run.summary["effective_batch_size"] = effective_batch
 
     monitor = Monitor(task.id, run_dir, args.gpu, state, wb_run, interval=int(task.runtime.get("log_system_every_seconds", 30)))
     monitor.start()
@@ -201,12 +252,6 @@ def main() -> None:
     message = ""
     try:
         adapter = make_adapter(task.adapter, Path(args.root))
-        attempt = int(row.get("attempt", 1))
-        oom_sizes = task.retry.get("oom_batch_sizes", [])
-        batch_size = None
-        if attempt > 1 and oom_sizes:
-            idx = min(attempt - 1, len(oom_sizes) - 1)
-            batch_size = int(oom_sizes[idx])
         phases = adapter.phases(task, batch_size=batch_size)
         env = {"CUDA_VISIBLE_DEVICES": str(args.gpu), "LTX_TASK_ID": task.id, "LTX_RUN_DIR": str(run_dir)}
         for phase in phases:
@@ -254,6 +299,7 @@ def main() -> None:
     finally:
         monitor.stop()
         monitor.join(timeout=5)
+        monitor.finalize()
         if wb_run is not None:
             try:
                 if task.runtime.get("upload_stdout_artifact", True) and stdout_log.exists():

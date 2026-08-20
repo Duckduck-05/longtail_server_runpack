@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Dict, List, Set
 
 from .config import LoadedCampaign
-from .gpu import query_gpus
+from .gpu import plan_slots, query_gpus
 from .state import StateDB
 
 
@@ -37,6 +37,9 @@ class Scheduler:
         self.gpu_for_task: Dict[str, int] = {}
         self.stop_requested = False
         self.launcher_logs: Dict[str, object] = {}
+        self._current_slots: Dict[int, int] = {}
+        self._last_printed_slots: Dict[int, int] = {}
+        self._last_launch_on_gpu: Dict[int, float] = {}
 
     def _signal(self, signum, frame):
         self.stop_requested = True
@@ -49,20 +52,83 @@ class Scheduler:
             return detected
         return [int(x) for x in configured if int(x) in detected]
 
-    def _free_gpus(self) -> List[int]:
-        machine = self.campaign.server.get("machine", {})
-        min_free = float(machine.get("min_free_gpu_memory_gb", 0)) * 1024
-        busy = set(self.gpu_for_task.values())
-        for row in self.state.rows("running"):
-            if row.get("gpu_id") is not None:
-                busy.add(int(row["gpu_id"]))
-        free = []
-        for gpu in query_gpus():
-            if gpu.index not in self._allowed_gpus() or gpu.index in busy:
+    def _task_memory_estimate_gb(self) -> float:
+        """Largest observed per-task GPU footprint so far, with a safety margin.
+
+        Falls back to a conservative 12 GB seed until at least one task has
+        finished and reported its own peak usage via ``gpu_footprint.json``
+        (written by the worker's Monitor thread).
+        """
+        best = 0.0
+        for path in self.campaign_dir.rglob("gpu_footprint.json"):
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                peak = float(payload.get("peak_memory_gb", 0))
+            except (OSError, ValueError, TypeError):
                 continue
-            if gpu.memory_free_mb >= min_free:
-                free.append(gpu.index)
-        return free
+            best = max(best, peak)
+        return best * 1.15 if best > 0 else 12.0
+
+    def _running_on(self) -> Dict[int, int]:
+        """How many of our own tasks currently occupy each GPU."""
+        counts: Dict[int, int] = {}
+        for row in self.state.rows("running"):
+            gpu_id = row.get("gpu_id")
+            if gpu_id is not None:
+                counts[int(gpu_id)] = counts.get(int(gpu_id), 0) + 1
+        return counts
+
+    def _compute_slots(self, running_on: Dict[int, int] | None = None) -> Dict[int, int]:
+        machine = self.campaign.server.get("machine", {})
+        allowed = set(self._allowed_gpus())
+        gpus = [g for g in query_gpus() if g.index in allowed]
+
+        tasks_per_gpu_cfg = machine.get("tasks_per_gpu", "auto")
+        if tasks_per_gpu_cfg != "auto":
+            tasks_per_gpu_cfg = int(tasks_per_gpu_cfg)
+
+        task_memory_cfg = machine.get("task_gpu_memory_gb", "auto")
+        task_memory_gb = self._task_memory_estimate_gb() if task_memory_cfg == "auto" else float(task_memory_cfg)
+
+        slots = plan_slots(
+            gpus,
+            tasks_per_gpu=tasks_per_gpu_cfg,
+            task_memory_gb=task_memory_gb,
+            headroom_gb=float(machine.get("gpu_memory_headroom_gb", 4)),
+            ceiling=int(machine.get("max_tasks_per_gpu", 4)),
+            running_on=running_on if running_on is not None else self._running_on(),
+        )
+        if slots != self._last_printed_slots:
+            print(f"[ltx] gpu slots={slots} task_memory_estimate_gb={task_memory_gb:.1f}", flush=True)
+            self._last_printed_slots = dict(slots)
+        self._current_slots = slots
+        return slots
+
+    def _available_slots(self) -> List[int]:
+        """GPU indices with open capacity right now (may repeat a GPU index)."""
+        machine = self.campaign.server.get("machine", {})
+        min_free_mb = float(machine.get("min_free_gpu_memory_gb", 0)) * 1024
+        stagger = float(machine.get("same_gpu_launch_stagger_seconds", 0))
+        allowed = set(self._allowed_gpus())
+        gpus = [g for g in query_gpus() if g.index in allowed]
+        running_on = self._running_on()
+        slots = self._compute_slots(running_on)
+
+        now = time.time()
+        available: List[int] = []
+        for gpu in gpus:
+            if gpu.memory_free_mb < min_free_mb:
+                continue
+            busy_here = running_on.get(gpu.index, 0)
+            last_launch = self._last_launch_on_gpu.get(gpu.index, 0.0)
+            # A GPU that already hosts a task waits out the stagger window
+            # before taking another: nvidia-smi's free-memory reading lags a
+            # freshly started task, so reading it too soon over-packs into OOM.
+            if busy_here > 0 and stagger > 0 and (now - last_launch) < stagger:
+                continue
+            open_slots = slots.get(gpu.index, 0) - busy_here
+            available.extend([gpu.index] * max(0, open_slots))
+        return available
 
     def _disk_ok(self) -> bool:
         limit = float(self.campaign.server.get("machine", {}).get("disk_stop_free_gb", 0))
@@ -71,6 +137,14 @@ class Scheduler:
             print(f"[ltx] disk guard: only {free:.1f} GB free (< {limit:.1f} GB); pausing launch", flush=True)
             return False
         return True
+
+    def _worker_env(self) -> Dict[str, str]:
+        env = os.environ.copy()
+        total_slots = sum(self._current_slots.values()) or 1
+        max_workers = int(self.campaign.server.get("machine", {}).get("max_dataloader_workers", 8))
+        cpu_count = os.cpu_count() or 1
+        env["LTX_NUM_WORKERS"] = str(max(2, min(max_workers, cpu_count // total_slots)))
+        return env
 
     def _launch(self, task_id: str, gpu_id: int) -> None:
         command = [
@@ -82,11 +156,15 @@ class Scheduler:
         if not self.state.claim(task_id, gpu_id, 0):
             log.close()
             return
-        proc = subprocess.Popen(command, cwd=str(self.campaign.root), stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+        proc = subprocess.Popen(
+            command, cwd=str(self.campaign.root), stdout=log, stderr=subprocess.STDOUT,
+            start_new_session=True, env=self._worker_env(),
+        )
         self.state.mark_started(task_id, proc.pid)
         self.processes[task_id] = proc
         self.gpu_for_task[task_id] = gpu_id
         self.launcher_logs[task_id] = log
+        self._last_launch_on_gpu[gpu_id] = time.time()
         print(f"[ltx] launched task={task_id} gpu={gpu_id} pid={proc.pid}", flush=True)
 
     def _reap(self) -> None:
@@ -113,9 +191,10 @@ class Scheduler:
         if not allowed:
             print("[ltx] no NVIDIA GPUs detected", flush=True)
             return 2
-        max_concurrent = machine.get("max_concurrent", "auto")
-        max_concurrent = len(allowed) if max_concurrent == "auto" else int(max_concurrent)
-        print(f"[ltx] campaign={self.campaign.raw['campaign']['name']} GPUs={allowed} max_concurrent={max_concurrent}", flush=True)
+        max_concurrent_cfg = machine.get("max_concurrent", "auto")
+        initial_slots = self._compute_slots()
+        display_cap = f"auto({sum(initial_slots.values())})" if max_concurrent_cfg == "auto" else max_concurrent_cfg
+        print(f"[ltx] campaign={self.campaign.raw['campaign']['name']} GPUs={allowed} max_concurrent={display_cap}", flush=True)
 
         while True:
             self._reap()
@@ -130,10 +209,12 @@ class Scheduler:
                 now = time.time()
                 pending = [r for r in rows if r["status"] == "pending" or
                            (r["status"] == "retry" and now - float(r.get("finished_at") or 0) >= retry_delay)]
-                running_count = len(self.state.rows("running"))
-                slots = max(0, max_concurrent - running_count)
-                free_gpus = self._free_gpus()[:slots]
-                for row, gpu_id in zip(pending, free_gpus):
+                available = self._available_slots()
+                if max_concurrent_cfg != "auto":
+                    running_count = len(self.state.rows("running"))
+                    cap = max(0, int(max_concurrent_cfg) - running_count)
+                    available = available[:cap]
+                for row, gpu_id in zip(pending, available):
                     self._launch(row["id"], gpu_id)
             if self.stop_requested and not self.processes:
                 break

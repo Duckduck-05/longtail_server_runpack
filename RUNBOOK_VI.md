@@ -11,6 +11,24 @@ environment từ `environment.yml`, bootstrap các third-party đã vendored, đ
 `.env.local`, tự tải CIFAR-10/CIFAR-100 bằng `torchvision`, tạo metric assets,
 rồi chạy/resume campaign 45 task.
 
+## Chọn mức song song (GPU packing)
+
+Mặc định lệnh trên tự dò VRAM trống của từng GPU và tự quyết định số task
+chạy chung một GPU (`machine.tasks_per_gpu: auto` trong `configs/server.yaml`),
+bắt đầu từ ước lượng 12 GB/task rồi tự hiệu chỉnh theo footprint thật của
+task đầu tiên hoàn thành. Không cần biết trước cấu hình máy thuê.
+
+Ép tay khi cần — ví dụ máy đang cotenant hoặc muốn giới hạn GPU cụ thể:
+
+```bash
+bash scripts/run_server.sh --per-gpu 3 --gpus 0,1,2,3
+bash scripts/run_server.sh --jobs 8        # trần tổng số task chạy đồng thời
+```
+
+Hoặc đặt trong `.env.local`: `LTX_TASKS_PER_GPU`, `LTX_GPU_IDS`,
+`LTX_MAX_CONCURRENT`. Hai task chung một GPU sẽ tự chia nhỏ `num_workers` của
+dataloader để không quá tải CPU của host.
+
 ## Campaign được khóa
 
 - Cells: CIFAR-10-LT IF100, CIFAR-10-LT IF1000, CIFAR-100-LT IF100.
@@ -38,11 +56,16 @@ Kết quả paper-facing chỉ đọc từ:
 runs/unified_cifar_v1/report/table.md
 runs/unified_cifar_v1/report/per_seed.csv
 runs/unified_cifar_v1/report/summary.json
+runs/unified_cifar_v1/report/results.log   # bảng + fingerprint + trạng thái từng task + link W&B, gộp một file
+runs/unified_cifar_v1/latest.log           # toàn bộ stdout của lần chạy gần nhất (symlink)
 ```
 
 W&B có năm run groups theo cell/method, loss và system telemetry theo task,
 sample grids, `comparison/per_seed`, `comparison/unified_main_table`, và
 report artifact. Report fail-closed nếu một trong ba seed hoặc metric bị thiếu.
+Với `WANDB_API_KEY` đã có trong `.env.local`, `--wandb` (script chính luôn
+bật cờ này) sẽ tự đặt project thành public-read và tạo một W&B Report tổng
+hợp bảng + biểu đồ; link report được in ra cuối lệnh và ghi vào `results.log`.
 
 Không gọi kết quả này là “paper reproduction”: đây là protocol chung mới với
 source-native implementations. Chi tiết khoa học ở

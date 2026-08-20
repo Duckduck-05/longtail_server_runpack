@@ -1,10 +1,24 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List
 
 from ..config import Task
+
+
+def resolve_num_workers(train: Dict, default: int) -> int:
+    """Dataloader worker count, letting the scheduler's packing-aware
+    LTX_NUM_WORKERS env override the campaign config so co-located tasks
+    don't oversubscribe the host's CPUs."""
+    override = os.environ.get("LTX_NUM_WORKERS")
+    if override:
+        try:
+            return int(override)
+        except ValueError:
+            pass
+    return int(train.get("num_workers", default))
 
 
 @dataclass

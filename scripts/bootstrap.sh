@@ -72,6 +72,16 @@ if [[ "$INSTALL_REPO_DEPS" == "1" ]]; then
   python -m pip install -r "$ROOT/requirements.runpack.txt"
 fi
 
+# Authenticate once so every worker and the final report share one identity
+# instead of relying on ambient env vars. Never echo the key itself.
+if [[ -n "${WANDB_API_KEY:-}" && "${WANDB_MODE:-online}" != "offline" ]]; then
+  if wandb login --relogin "$WANDB_API_KEY" >/dev/null 2>&1; then
+    echo "[bootstrap] W&B authenticated as ${WANDB_ENTITY:-default entity}"
+  else
+    echo "[bootstrap] W&B login failed; runs will fall back to offline" >&2
+  fi
+fi
+
 {
   date -Is
   sha256sum "$REPOS_ROOT/THIRD_PARTY_MANIFEST.json"

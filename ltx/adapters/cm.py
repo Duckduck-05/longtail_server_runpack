@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import List
 import yaml
 
-from .base import Adapter, Phase
+from .base import Adapter, Phase, resolve_num_workers
 from ..config import Task
 
 
@@ -63,11 +63,13 @@ class CMAdapter(Adapter):
         loop_bound = total_steps + int(bool(task.train.get("inclusive_final_step", False)))
         cfg.setdefault("training", {})["total_steps"] = loop_bound
         cfg["training"]["batch_size"] = int(batch_size or task.train.get("batch_size", cfg["training"].get("batch_size", 64)))
-        for key in ("lr", "warmup", "T", "dropout", "num_workers", "ema_decay", "sample_step", "save_step"):
+        for key in ("lr", "warmup", "T", "dropout", "ema_decay", "sample_step", "save_step"):
             if key not in task.train:
                 continue
             target = "diffusion" if key == "T" else ("model" if key == "dropout" else "training")
             cfg.setdefault(target, {})[key if key != "T" else "T"] = task.train[key]
+        cfg.setdefault("training", {})["num_workers"] = resolve_num_workers(
+            task.train, cfg.get("training", {}).get("num_workers", 4))
         checkpoint_step = int(task.eval.get("checkpoint_step", total_steps if task.train.get("inclusive_final_step", False) else total_steps - 1))
         image_dir = run_dir / f"generated-ckpt-{checkpoint_step}"
         feature_dir = run_dir / "features"

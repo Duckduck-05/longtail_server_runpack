@@ -7,6 +7,7 @@ import csv
 import json
 import math
 import sys
+import time
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
@@ -16,7 +17,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from ltx.comparison import METRIC_DIRECTIONS, mean_std, ranks
-from ltx.config import load_campaign
+from ltx.config import load_campaign, LoadedCampaign
+from ltx.state import StateDB
 from ltx.utils import load_runtime_env
 
 
@@ -68,6 +70,94 @@ def fmt(mean: float | None, std: float | None) -> str:
     if mean is None:
         return "MISSING"
     return f"{mean:.4f} ± {std:.4f}"
+
+
+def read_text_or_empty(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+def render_task_status_table(campaign: LoadedCampaign) -> str:
+    """Final per-task scheduler status, straight from state.sqlite."""
+    state_path = Path(campaign.server["runtime"]["runs_root"]) / campaign.raw["campaign"]["name"] / "state.sqlite"
+    if not state_path.is_file():
+        return "(no state.sqlite yet; the campaign has not been launched)"
+    db = StateDB(state_path)
+    try:
+        rows = db.rows()
+    finally:
+        db.close()
+    lines = [f"{'STATUS':10} {'ATT':3} {'STAGE':31} {'METHOD':10} {'SEED':4} MESSAGE"]
+    for row in sorted(rows, key=lambda r: r["id"]):
+        task = json.loads(row["payload"])
+        lines.append(
+            f"{row['status'][:10]:10} {row['attempt']:3d} {task['stage'][:31]:31} "
+            f"{task['method'][:10]:10} {task['seed']:4d} {(row.get('message') or '')[:100]}"
+        )
+    return "\n".join(lines)
+
+
+def try_make_project_public(campaign: LoadedCampaign) -> tuple[bool, str]:
+    """Best-effort: flip the W&B project to public-read so the report link
+    needs no login. Never raises; on failure it returns the one-time manual
+    UI path instead."""
+    project = campaign.server["runtime"].get("wandb_project", "longtail")
+    entity = campaign.server["runtime"].get("wandb_entity") or ""
+    try:
+        import wandb
+        api = wandb.Api()
+        entity = entity or api.default_entity
+        api.client.execute(api.CREATE_PROJECT, {"entityName": entity, "name": project, "access": "USER_READ"})
+        return True, f"https://wandb.ai/{entity}/{project}"
+    except Exception as exc:
+        entity_display = entity or "<entity>"
+        return False, (
+            f"could not set the W&B project public automatically ({exc}); "
+            f"set it once by hand at https://wandb.ai/{entity_display}/{project}/settings"
+        )
+
+
+def build_wandb_report(campaign: LoadedCampaign, table_lines: list[str], tail_lines: list[str]) -> str:
+    """Publish a W&B Report summarizing this campaign. Returns its URL, or ""
+    if the optional wandb-workspaces package or the API call is unavailable —
+    the campaign result never depends on this succeeding."""
+    try:
+        import wandb_workspaces.reports.v2 as wr
+    except Exception as exc:
+        print(f"[report] wandb-workspaces not available; skipping W&B Report ({exc})")
+        return ""
+    project = campaign.server["runtime"].get("wandb_project", "longtail")
+    entity = campaign.server["runtime"].get("wandb_entity") or ""
+    campaign_name = campaign.raw["campaign"]["name"]
+    try:
+        report = wr.Report(
+            entity=entity,
+            project=project,
+            title=f"{campaign_name} — unified CIFAR-LT baseline table",
+            description=campaign.raw.get("campaign", {}).get("description", ""),
+            blocks=[
+                wr.H1(text="Unified CIFAR-LT baseline table"),
+                wr.MarkdownBlock(text="\n".join(table_lines)),
+                wr.H1(text="Long-tail FID breakdown"),
+                wr.MarkdownBlock(text="\n".join(tail_lines)),
+                wr.PanelGrid(
+                    runsets=[wr.Runset(entity=entity, project=project,
+                                        filters=f'Config("campaign") == "{campaign_name}"')],
+                    panels=[
+                        wr.RunComparer(),
+                        wr.BarPlot(title="FID (lower is better)", metrics=["generation/FID"]),
+                        wr.BarPlot(title="KID (lower is better)", metrics=["generation/KID"]),
+                    ],
+                ),
+            ],
+        )
+        report.save()
+        return report.url
+    except Exception as exc:
+        print(f"[report] W&B Report creation failed: {exc}")
+        return ""
 
 
 def main() -> int:
@@ -231,7 +321,15 @@ def main() -> int:
     (output / "tail_breakdown.md").write_text("\n".join(tail_lines) + "\n", encoding="utf-8")
 
     incomplete = [item for item in summary if not item["complete"]]
+    urls: dict[str, str] = {}
+    visibility_note = ""
     if args.wandb:
+        made_public, visibility_note = try_make_project_public(campaign)
+        if made_public:
+            urls["project"] = visibility_note
+            print(f"[report] W&B project is public: {visibility_note}")
+        else:
+            print(f"[report] {visibility_note}")
         try:
             import wandb
             run = wandb.init(
@@ -264,11 +362,54 @@ def main() -> int:
             run.log_artifact(artifact)
             run.summary["table/incomplete_cells"] = len(incomplete)
             run.summary["table/claim_status"] = payload["claim_status"]
+            urls["project"] = urls.get("project") or run.get_project_url() or ""
+            urls["run"] = run.get_url() or ""
+            report_url = build_wandb_report(campaign, lines, tail_lines)
+            if report_url:
+                urls["report"] = report_url
+                run.summary["table/report_url"] = report_url
+                print(f"[report] W&B Report: {report_url}")
+            for key, url in urls.items():
+                if url:
+                    run.summary[f"table/url_{key}"] = url
             run.finish(exit_code=0 if not incomplete else 2)
         except Exception as exc:
             print(f"[report] W&B upload failed: {exc}")
 
+    payload["wandb_urls"] = urls
+    (output / "summary.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+    url_lines = [f"- {key}: {url}" for key, url in urls.items() if url] or ["(W&B upload not requested or unavailable)"]
+    results_log = [
+        f"# {campaign.raw['campaign']['name']} — results log",
+        f"generated_at: {time.strftime('%Y-%m-%dT%H:%M:%S%z')}",
+        "",
+        "## Campaign fingerprint",
+        read_text_or_empty(Path(campaign.server["runtime"]["runs_root"]) / campaign.raw["campaign"]["name"] / "campaign_fingerprint.txt").strip() or "(not launched yet)",
+        "",
+        "## Vendor / environment provenance",
+        read_text_or_empty(Path(campaign.server["runtime"]["repos_root"]) / "VENDOR_AND_ENV.txt").strip() or "(missing third_party/VENDOR_AND_ENV.txt)",
+        "",
+        "## Fairness contract",
+        json.dumps(campaign.raw.get("fairness_contract", {}), indent=2, sort_keys=True),
+        "",
+        "## Per-task scheduler status",
+        render_task_status_table(campaign),
+        "",
+        "## W&B links",
+        *url_lines,
+        "",
+        *lines,
+        "",
+        *tail_lines,
+        "",
+        f"## Verdict: {payload['claim_status']}",
+        f"complete cells: {len(summary) - len(incomplete)}/{len(summary)}",
+    ]
+    (output / "results.log").write_text("\n".join(results_log) + "\n", encoding="utf-8")
+
     print(f"[report] wrote {output / 'table.md'}; complete cells={len(summary) - len(incomplete)}/{len(summary)}")
+    print(f"[report] wrote {output / 'results.log'}")
     return 0 if not incomplete else 2
 
 

@@ -42,8 +42,22 @@ def cmd_plan(args) -> int:
     return 0
 
 
+def apply_machine_overrides(campaign, args) -> None:
+    """Let --gpus/--per-gpu/--jobs override configs/server.yaml for one launch
+    without editing the file, so the same one-command entrypoint adapts to
+    whatever GPU box it happens to land on."""
+    machine = campaign.server.setdefault("machine", {})
+    if getattr(args, "gpus", None):
+        machine["gpu_ids"] = [int(x) for x in args.gpus.split(",") if x.strip() != ""]
+    if getattr(args, "per_gpu", None) is not None:
+        machine["tasks_per_gpu"] = args.per_gpu
+    if getattr(args, "jobs", None) is not None:
+        machine["max_concurrent"] = args.jobs
+
+
 def cmd_run(args) -> int:
     campaign = load_campaign(args.config)
+    apply_machine_overrides(campaign, args)
     if not args.skip_preflight:
         checks = run_preflight(campaign)
         errors = [c for c in checks if c.level == "ERROR"]
@@ -125,9 +139,17 @@ def main() -> None:
     status.add_argument("--watch", type=int, default=0, help="refresh every N seconds")
     retry_failed = sub.add_parser("retry-failed"); retry_failed.add_argument("--config", default="configs/unified_cifar.yaml")
     retry_failed.add_argument("--stage", default=None)
+    def int_or_auto(value: str):
+        return value if value == "auto" else int(value)
+
     run = sub.add_parser("run")
     run.add_argument("--config", default="configs/unified_cifar.yaml")
     run.add_argument("--skip-preflight", action="store_true")
+    run.add_argument("--gpus", default=None, help="comma-separated GPU indices, e.g. 0,1,2,3 (default: all detected)")
+    run.add_argument("--per-gpu", dest="per_gpu", type=int_or_auto, default=None,
+                      help="tasks per GPU: an integer, or 'auto' to pack by free VRAM (default: config's machine.tasks_per_gpu)")
+    run.add_argument("--jobs", type=int_or_auto, default=None,
+                      help="cap on total concurrent tasks across all GPUs, or 'auto' (default: config's machine.max_concurrent)")
     args = parser.parse_args()
     handlers = {
         "preflight": cmd_preflight, "plan": cmd_plan, "run": cmd_run,
