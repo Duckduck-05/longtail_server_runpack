@@ -37,10 +37,25 @@ double-counted row.
 
 - Exact public CIFAR-LT exponential splits, `split_seed=0`.
 - Three paired training seeds: `0,1,2`.
-- 200,000 optimizer updates, batch size 64, LR 0.0002, 5,000-step warmup,
-  U-Net base width 128, `ch_mult=[1,2,2,2]`, dropout 0.1, diffusion `T=1000`.
-- Conditional CFG training and ancestral DDPM sampling with all 1,000 reverse
-  steps; guidance value 1.0.
+- LR 0.0002, 5,000-step warmup, dropout 0.1, gradient clip 1.0, diffusion
+  `T=1000`, conditional CFG training (10% label dropout), ADA augmentation off.
+- 300,000 updates at batch 64 = 19.2M images seen, the same budget CBDM
+  (300k×64), CM (300k×64) and CORAL (150k×128) each used. Every 50k checkpoint
+  is retained so the budget is auditable; upstream loops delete all but the
+  last, which would make the ranking's dependence on budget unverifiable.
+- Backbone pinned in the contract and enforced by preflight: ch=128,
+  ch_mult=[1,2,2,2], attn=[1], 2 residual blocks, EMA 0.9999. All four upstream
+  repos already agree on these, but only by shared flag defaults — a vendored
+  source bump would otherwise change the architecture silently.
+- Guidance is ω=1.0 for every row, applied through the identical formula
+  `eps + ω·(eps_cond − eps_uncond)` present in all four repos. The papers
+  instead tune ω per method and dataset (CBDM uses 1.6/0.8/1.0/0.8; CORAL
+  tabulates its own), so this table is one point on each method's fidelity /
+  diversity trade-off, not each method's best ω. `guidance_scales` sweeps
+  extra ω values from the same trained checkpoint when that curve is needed.
+- Sampling is ancestral DDPM with T=1000 for every row — the only mode all
+  four repos support natively. CM publishes DDIM-50 numbers and T2H DDIM-100,
+  so their published tables are not directly comparable to these rows.
 - 50,000 generated 32×32 RGB images per run, with exact cyclic class-uniform
   condition labels (5,000/class for CIFAR-10; 500/class for CIFAR-100).
 - One array-based evaluator for every method: balanced CIFAR-train FID,

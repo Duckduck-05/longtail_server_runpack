@@ -68,6 +68,12 @@ class CMAdapter(Adapter):
                 continue
             target = "diffusion" if key == "T" else ("model" if key == "dropout" else "training")
             cfg.setdefault(target, {})[key if key != "T" else "T"] = task.train[key]
+        # Pin the backbone from the campaign contract rather than inheriting
+        # whatever the vendored cm.yaml happens to carry, so all five methods
+        # provably share one architecture.
+        for key in ("ch", "ch_mult", "attn", "num_res_blocks"):
+            if key in task.train:
+                cfg.setdefault("model", {})[key] = task.train[key]
         cfg.setdefault("training", {})["num_workers"] = resolve_num_workers(
             task.train, cfg.get("training", {}).get("num_workers", 4))
         checkpoint_step = int(task.eval.get("checkpoint_step", total_steps if task.train.get("inclusive_final_step", False) else total_steps - 1))
@@ -124,33 +130,56 @@ class CMAdapter(Adapter):
         # implementation as DDPM/CBDM/T2H/CORAL.  CM emits PNGs, so first
         # canonicalize them to the exact [N, 3, 32, 32] / label contract.
         if task.eval.get("metric_protocol") == "unified_cifar_v1":
-            metrics = run_dir / str(task.eval.get("metrics_file", "metrics.unified.json"))
-            metric_cmd = [
-                py, str(self.root / "tools" / "evaluate_coral2025.py"),
-                "--repo", str(Path(task.runtime["repos_root"]) / "CBDM-pytorch"),
-                "--data-type", str(task.dataset["data_type"]),
-                "--samples", str(unified_samples), "--labels", str(unified_labels),
-                "--metrics-root", str(Path(task.runtime["repos_root"]) / "CBDM-pytorch" / "stats"),
-                "--output", str(metrics),
-            ]
-            if task.eval.get("kid", False):
-                metric_cmd += ["--kid", "--kid-subsets", str(task.eval.get("kid_subsets", 100)),
-                               "--kid-subset-size", str(task.eval.get("kid_subset_size", 1000)),
-                               "--kid-seed", str(task.eval.get("kid_seed", 2026))]
+            # omega only affects sampling, so extra guidance strengths reuse the
+            # one trained checkpoint. Each needs its own resolved config because
+            # sample_images.py reads omega and the output paths from the YAML.
+            scales = task.method_config.get(
+                "guidance_scales", [cfg["evaluation"].get("omega", task.eval.get("guidance_scale", 1.0))])
+            if not isinstance(scales, list):
+                scales = [scales]
+            phases = list(base_phases)
+            for omega in scales[1:]:
+                sweep_cfg = yaml.safe_load(yaml.safe_dump(cfg))
+                sweep_cfg["evaluation"]["omega"] = omega
+                sweep_samples = run_dir / f"samples.unified_w{omega}.npy"
+                sweep_labels = run_dir / f"labels.unified_w{omega}.npy"
+                sweep_cfg["evaluation"]["image_dir"] = str(run_dir / f"generated-ckpt-{checkpoint_step}-w{omega}")
+                sweep_resolved = run_dir / f"cm.resolved_w{omega}.yaml"
+                sweep_resolved.write_text(yaml.safe_dump(sweep_cfg, sort_keys=False), encoding="utf-8")
+                sweep_marker = run_dir / f"CM_SAMPLE_DONE_w{omega}"
+                sweep_core = [py, "tools/sample_images.py", "--config", str(sweep_resolved), "--ckpt", str(ckpt),
+                              "--samples_output", str(sweep_samples), "--labels_output", str(sweep_labels)]
+                sweep_shell = " ".join(shlex.quote(str(x)) for x in sweep_core) + " && touch " + shlex.quote(str(sweep_marker))
+                phases.append(Phase(f"sample_w{omega}", ["bash", "-lc", sweep_shell], repo,
+                                    skip_if_exists=[sweep_marker, sweep_samples, sweep_labels]))
+
+            metrics_name = str(task.eval.get("metrics_file", "metrics.unified.json"))
             per_class_file = str(task.eval.get("per_class_metrics_file", "")).strip()
-            if per_class_file:
-                metric_cmd += ["--per-class-output", str(run_dir / per_class_file),
-                               "--longtail-groups", str(task.eval.get("longtail_groups", "none"))]
-            outputs = [metrics]
-            if per_class_file:
-                outputs.append(run_dir / per_class_file)
-            return base_phases + [
-                Phase(
-                    "unified_metrics",
-                    metric_cmd,
-                    self.root, skip_if_exists=outputs,
-                ),
-            ]
+            for index, omega in enumerate(scales):
+                primary = index == 0
+                suffix = "" if primary else f"_w{omega}"
+                metrics = run_dir / (metrics_name if primary else metrics_name.replace(".json", f"{suffix}.json"))
+                samples = unified_samples if primary else run_dir / f"samples.unified_w{omega}.npy"
+                labels = unified_labels if primary else run_dir / f"labels.unified_w{omega}.npy"
+                metric_cmd = [
+                    py, str(self.root / "tools" / "evaluate_coral2025.py"),
+                    "--repo", str(Path(task.runtime["repos_root"]) / "CBDM-pytorch"),
+                    "--data-type", str(task.dataset["data_type"]),
+                    "--samples", str(samples), "--labels", str(labels),
+                    "--metrics-root", str(Path(task.runtime["repos_root"]) / "CBDM-pytorch" / "stats"),
+                    "--output", str(metrics),
+                ]
+                if task.eval.get("kid", False):
+                    metric_cmd += ["--kid", "--kid-subsets", str(task.eval.get("kid_subsets", 100)),
+                                   "--kid-subset-size", str(task.eval.get("kid_subset_size", 1000)),
+                                   "--kid-seed", str(task.eval.get("kid_seed", 2026))]
+                outputs = [metrics]
+                if per_class_file and primary:
+                    metric_cmd += ["--per-class-output", str(run_dir / per_class_file),
+                                   "--longtail-groups", str(task.eval.get("longtail_groups", "none"))]
+                    outputs.append(run_dir / per_class_file)
+                phases.append(Phase(f"unified_metrics{suffix}", metric_cmd, self.root, skip_if_exists=outputs))
+            return phases
         cifar = "cifar10" if task.dataset.get("data_type") == "cifar10lt" else "cifar100"
         return base_phases + [Phase(
             "metrics_cm_cifar_lt",

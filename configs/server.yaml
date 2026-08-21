@@ -4,7 +4,10 @@ machine:
   min_free_gpu_memory_gb: 0
   poll_seconds: 20
   heartbeat_seconds: 30
-  disk_stop_free_gb: 0
+  # Retaining every 50k checkpoint costs ~0.57 GB each: 6 per run x 45 runs
+  # is ~155 GB for the campaign. Pause launching rather than fill the disk and
+  # lose a run mid-training. Set to 0 to disable the guard.
+  disk_stop_free_gb: 100
   shutdown_grace_seconds: 45
   # How many tasks may share one GPU. "auto" divides each GPU's free memory
   # (minus gpu_memory_headroom_gb) by task_gpu_memory_gb, capped at

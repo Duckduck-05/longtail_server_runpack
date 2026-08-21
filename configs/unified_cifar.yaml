@@ -18,11 +18,24 @@ fairness_contract:
   cells: [cifar10lt_if100, cifar10lt_if1000, cifar100lt_if100]
   methods: [ddpm, cbdm, t2h, cm, coral]
   seeds: [0, 1, 2]
-  train_updates: 200000
+  # 300k x batch 64 = 19.2M images seen, which is exactly the data budget of
+  # CBDM (300k x 64), CM (300k x 64) and CORAL (150k x 128). At the previous
+  # 200k (12.8M) both CBDM and CM ran below their own papers' design point
+  # while CORAL ran above its: undertraining two baselines is a fairness
+  # violation in a way that a uniform surplus is not.
+  train_updates: 300000
   train_batch_size: 64
   learning_rate: 0.0002
   diffusion_steps: 1000
   generated_images: 50000
+  # Backbone is identical across all four upstream repos. Pinned here so a
+  # vendored-source update or a stray --flagfile cannot silently make the
+  # comparison apples-to-oranges while preflight still passes.
+  unet_ch: 128
+  unet_ch_mult: [1, 2, 2, 2]
+  unet_attn: [1]
+  unet_num_res_blocks: 2
+  ema_decay: 0.9999
   conditional_label_schedule: cyclic_class_uniform
   sampler_family: ancestral_ddpm
   metric_protocol: unified_cifar_v1
@@ -48,7 +61,7 @@ repositories:
 # Every adapter receives these exact settings.  The CM loop needs an inclusive
 # endpoint flag because its released CLI uses a half-open ``range``.
 common_train: &common_train
-  total_steps: 200000
+  total_steps: 300000
   inclusive_final_step: true
   batch_size: 64
   lr: 0.0002
@@ -56,14 +69,22 @@ common_train: &common_train
   T: 1000
   dropout: 0.1
   num_workers: 4
-  save_step: 100000
+  # Keep every 50k checkpoint (the retention patch stops the upstream loops
+  # deleting the previous one), so the budget can be audited after the fact
+  # instead of only the final step being observable.
+  save_step: 50000
   sample_step: 100000
+  ch: 128
+  ch_mult: [1, 2, 2, 2]
+  attn: [1]
+  num_res_blocks: 2
+  ema_decay: 0.9999
   conditional: true
   cfg: true
   amp: false
 
 common_eval: &common_eval
-  checkpoint_step: 200000
+  checkpoint_step: 300000
   num_images: 50000
   sample_batch_size: 64
   guidance_scale: 1.0

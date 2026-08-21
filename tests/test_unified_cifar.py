@@ -35,8 +35,18 @@ def test_unified_matrix_is_one_nonduplicated_fair_table():
     by_cell = {}
     for task in campaign.tasks:
         by_cell.setdefault(task.dataset["name"], []).append(task)
-        assert task.train["total_steps"] == 200000
+        # 300k x 64 = 19.2M images seen, matching CBDM/CM (300k x 64) and
+        # CORAL (150k x 128) so no baseline runs below its own design point.
+        assert task.train["total_steps"] == 300000
         assert task.train["batch_size"] == 64
+        assert task.train["save_step"] == 50000
+        assert task.eval["checkpoint_step"] == 300000
+        # backbone pinned, not inherited from each repo's flag defaults
+        assert task.train["ch"] == 128
+        assert task.train["ch_mult"] == [1, 2, 2, 2]
+        assert task.train["attn"] == [1]
+        assert task.train["num_res_blocks"] == 2
+        assert task.train["ema_decay"] == 0.9999
         assert task.train["lr"] == 2e-4
         assert task.train["T"] == 1000
         assert task.dataset["split_seed"] == 0
@@ -183,3 +193,41 @@ def test_report_bundle_includes_both_logs(tmp_path, monkeypatch):
     # the campaign stdout is snapshotted, not linked, so log rotation cannot orphan it
     assert not (output / "campaign_run.log").is_symlink()
     assert "campaign finished" in (output / "campaign_run.log").read_text()
+
+
+def test_omega_sweep_reuses_one_trained_checkpoint(tmp_path):
+    """Guidance strength only affects sampling, so a sweep must add sampling
+    and metric phases without ever retraining."""
+    from ltx.adapters import make_adapter
+    campaign = load_campaign(ROOT / "configs/unified_cifar.yaml")
+    for method in ("t2h", "cm", "ddpm"):
+        task = [t for t in campaign.tasks if t.method == method and t.seed == 0][0]
+        run_dir = tmp_path / f"{method}-sweep"
+        swept = replace(task, run_dir=str(run_dir),
+                        method_config={**task.method_config, "guidance_scales": [1.0, 1.5, 2.0]})
+        phases = make_adapter(task.adapter, ROOT).phases(swept)
+        names = [p.name for p in phases]
+        assert names.count("train") == 1, f"{method} retrains per omega: {names}"
+        for omega in (1.5, 2.0):
+            assert any(f"w{omega}" in n for n in names), f"{method} missing omega {omega}: {names}"
+
+
+def test_single_omega_keeps_the_original_phase_names(tmp_path):
+    """A one-omega run must keep its historical artefact names so an
+    in-progress campaign still resumes instead of re-sampling from scratch."""
+    from ltx.adapters import make_adapter
+    campaign = load_campaign(ROOT / "configs/unified_cifar.yaml")
+    for method, expected in (("t2h", ["train", "eval", "paper_metrics"]),
+                             ("cm", ["train", "sample", "unified_metrics"])):
+        task = [t for t in campaign.tasks if t.method == method and t.seed == 0][0]
+        phases = make_adapter(task.adapter, ROOT).phases(
+            replace(task, run_dir=str(tmp_path / f"{method}-single")))
+        assert [p.name for p in phases] == expected
+
+
+def test_checkpoint_retention_patch_is_applied_to_every_training_loop():
+    """Every 50k checkpoint must survive so the training budget stays
+    auditable; upstream loops delete the previous one."""
+    for relative in ("coral-lt-diffusion/main.py", "OC_LT/main.py", "ImbDiff-CM/tools/train.py"):
+        source = (ROOT / "third_party" / relative).read_text(encoding="utf-8")
+        assert "LTX_KEEP_CHECKPOINTS" in source, f"{relative} still deletes checkpoints unconditionally"

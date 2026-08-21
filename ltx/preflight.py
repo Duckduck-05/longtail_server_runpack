@@ -440,6 +440,15 @@ def _check_unified_cifar_contract(campaign: LoadedCampaign, repo_root: Path) -> 
         if task.eval.get("sampler_family") != contract.get("sampler_family"): settings_errors.append(f"{prefix}: sampler")
         if task.eval.get("metric_protocol") != contract.get("metric_protocol"): settings_errors.append(f"{prefix}: metrics")
         if int(task.dataset.get("split_seed", -1)) != 0: settings_errors.append(f"{prefix}: split_seed")
+        # The backbone was previously matched only because all four repos
+        # happened to share the same flag defaults; nothing detected a drift.
+        for contract_key, train_key in (("unet_ch", "ch"), ("unet_ch_mult", "ch_mult"),
+                                        ("unet_attn", "attn"), ("unet_num_res_blocks", "num_res_blocks"),
+                                        ("ema_decay", "ema_decay")):
+            expected_value = contract.get(contract_key)
+            if expected_value is not None and task.train.get(train_key) != expected_value:
+                settings_errors.append(f"{prefix}: {train_key}={task.train.get(train_key)} != {expected_value}")
+        if int(task.train.get("save_step", 0)) <= 0: settings_errors.append(f"{prefix}: save_step")
         if not task.eval.get("kid", False): settings_errors.append(f"{prefix}: KID")
         if not task.eval.get("per_class_metrics_file"): settings_errors.append(f"{prefix}: per-class FID")
         if task.eval.get("longtail_groups") != "cm_three_way": settings_errors.append(f"{prefix}: Many/Medium/Few grouping")

@@ -361,9 +361,12 @@ def main():
                     "rng_state": capture_rng_state(),  # LTX_CM_RESUME_RNG_CHECKPOINT
                 }
                 torch.save(ckpt, output_dir / f"ckpt_{step}.pt")
-                prev_ckpt = output_dir / f"ckpt_{step - save_step}.pt"
-                if prev_ckpt.exists():
-                    prev_ckpt.unlink()
+                # LTX: retain every checkpoint so the training budget stays
+                # auditable. Set LTX_KEEP_CHECKPOINTS=0 for upstream behaviour.
+                if os.environ.get("LTX_KEEP_CHECKPOINTS", "1") == "0":
+                    prev_ckpt = output_dir / f"ckpt_{step - save_step}.pt"
+                    if prev_ckpt.exists():
+                        prev_ckpt.unlink()
 
     writer.close()
 

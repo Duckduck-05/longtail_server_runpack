@@ -34,12 +34,20 @@ tasks don't oversubscribe the host's CPUs.
 
 | Data | Methods | Shared controls |
 |---|---|---|
-| CIFAR-10-LT IF100 | DDPM, CBDM, T2H, CM, CORAL | 200k updates; batch 64; LR 2e-4; U-Net base width 128; T=1000; 50k exact class-uniform samples |
+| CIFAR-10-LT IF100 | DDPM, CBDM, T2H, CM, CORAL | 300k updates; batch 64; LR 2e-4; U-Net ch=128 [1,2,2,2] attn[1] 2 blocks; EMA 0.9999; T=1000; 50k exact class-uniform samples |
 | CIFAR-10-LT IF1000 | DDPM, CBDM, T2H, CM, CORAL | same |
 | CIFAR-100-LT IF100 | DDPM, CBDM, T2H, CM, CORAL | same |
 
 `OC` is not an extra sixth row: the official `OC_LT` repository calls its
 method T2H. Running both names would double-count the same method.
+
+**Why 300k updates.** Counted as images seen, 300k x 64 = 19.2M is exactly the
+budget CBDM (300k x 64), CM (300k x 64) and CORAL (150k x 128) each used. A
+smaller shared budget would run CBDM and CM below their own papers' design
+point while running CORAL above its — undertraining two baselines is a
+fairness violation in a way that a uniform surplus is not. Every 50k
+checkpoint is retained, so the budget can be audited after the fact rather
+than only the final step being observable.
 
 The source paper for each row is indexed in [papers/README.md](papers/README.md)
 and fetched by `bash papers/fetch_papers.sh`.

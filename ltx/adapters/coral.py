@@ -18,6 +18,19 @@ class CoralAdapter(Adapter):
             return f"--{name}" if value else f"--no{name}"
         return f"--{name}={value}"
 
+    def _architecture_flags(self, train) -> List[str]:
+        """U-Net backbone flags, repeated for absl's multi_integer options."""
+        flags: List[str] = []
+        if "ch" in train:
+            flags.append(self._flag("ch", train["ch"]))
+        for name in ("ch_mult", "attn"):
+            for value in train.get(name, []):
+                flags.append(self._flag(name, value))
+        for name in ("num_res_blocks", "ema_decay"):
+            if name in train:
+                flags.append(self._flag(name, train[name]))
+        return flags
+
     @staticmethod
     def _latest_checkpoint(run_dir: Path, total_steps: int) -> int:
         best = 0
@@ -52,6 +65,10 @@ class CoralAdapter(Adapter):
             self._flag("T", train.get("T", 1000)), self._flag("dropout", train.get("dropout", 0.1)),
             self._flag("num_workers", resolve_num_workers(train, 8)),
         ]
+        # Pass the backbone explicitly instead of relying on every repo's flag
+        # defaults happening to agree: a vendored-source bump would otherwise
+        # change the architecture under a comparison that claims to hold it fixed.
+        train_cmd.extend(self._architecture_flags(train))
         if train.get("conditional", True): train_cmd.append("--conditional")
         if train.get("cfg", True): train_cmd.append("--cfg")
         if train.get("amp", False): train_cmd.append("--amp")
