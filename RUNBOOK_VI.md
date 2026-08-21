@@ -35,11 +35,12 @@ dataloader để không quá tải CPU của host.
 - Methods: DDPM, CBDM, T2H, CM, CORAL.
 - Seeds: 0, 1, 2 cho mọi data × method.
 - Train: 300,000 updates; batch 64; LR 2e-4; T=1000; conditional CFG;
-  U-Net ch=128 [1,2,2,2] attn[1] 2 blocks, EMA 0.9999 (pin trong contract,
-  preflight fail nếu lệch); giữ checkpoint mỗi 50k bước.
-  300k×64 = 19.2M ảnh — đúng bằng ngân sách của CBDM (300k×64), CM (300k×64)
-  và CORAL (150k×128), nên không baseline nào bị train thiếu so với paper gốc.
   exponential LT split với `split_seed=0`.
+- U-Net ch=128 [1,2,2,2] attn[1] 2 blocks, EMA 0.9999 — pin trong contract,
+  preflight fail nếu lệch. Checkpoint ghi mỗi 50k bước chỉ để resume khi crash;
+  như upstream, chỉ giữ cái mới nhất.
+- 300k×64 = 19.2M ảnh, đúng bằng ngân sách của CBDM (300k×64), CM (300k×64)
+  và CORAL (150k×128), nên không baseline nào bị train thiếu so với paper gốc.
 - Eval: 50,000 ảnh 32×32 với nhãn điều kiện đúng class-uniform, ancestral
   DDPM 1,000 reverse steps, một shared evaluator cho FID/IS/F₈/F₁⁄₈/IPR.
 

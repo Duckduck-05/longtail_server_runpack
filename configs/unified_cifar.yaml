@@ -69,9 +69,8 @@ common_train: &common_train
   T: 1000
   dropout: 0.1
   num_workers: 4
-  # Keep every 50k checkpoint (the retention patch stops the upstream loops
-  # deleting the previous one), so the budget can be audited after the fact
-  # instead of only the final step being observable.
+  # Upstream keeps only the newest checkpoint, so this is purely crash-resume
+  # granularity: a job that dies at 280k restarts from 250k, not 200k.
   save_step: 50000
   sample_step: 100000
   ch: 128

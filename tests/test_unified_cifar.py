@@ -224,10 +224,3 @@ def test_single_omega_keeps_the_original_phase_names(tmp_path):
             replace(task, run_dir=str(tmp_path / f"{method}-single")))
         assert [p.name for p in phases] == expected
 
-
-def test_checkpoint_retention_patch_is_applied_to_every_training_loop():
-    """Every 50k checkpoint must survive so the training budget stays
-    auditable; upstream loops delete the previous one."""
-    for relative in ("coral-lt-diffusion/main.py", "OC_LT/main.py", "ImbDiff-CM/tools/train.py"):
-        source = (ROOT / "third_party" / relative).read_text(encoding="utf-8")
-        assert "LTX_KEEP_CHECKPOINTS" in source, f"{relative} still deletes checkpoints unconditionally"

@@ -45,9 +45,7 @@ method T2H. Running both names would double-count the same method.
 budget CBDM (300k x 64), CM (300k x 64) and CORAL (150k x 128) each used. A
 smaller shared budget would run CBDM and CM below their own papers' design
 point while running CORAL above its — undertraining two baselines is a
-fairness violation in a way that a uniform surplus is not. Every 50k
-checkpoint is retained, so the budget can be audited after the fact rather
-than only the final step being observable.
+fairness violation in a way that a uniform surplus is not.
 
 The source paper for each row is indexed in [papers/README.md](papers/README.md)
 and fetched by `bash papers/fetch_papers.sh`.

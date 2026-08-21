@@ -486,12 +486,9 @@ def train():
                     ckpt['scaler'] = scaler.state_dict()
                 
                 torch.save(ckpt, os.path.join(FLAGS.logdir, 'ckpt_{}.pt'.format(step)))
-                # LTX: retain every checkpoint so the training budget stays
-                # auditable. Set LTX_KEEP_CHECKPOINTS=0 for upstream behaviour.
-                if os.environ.get('LTX_KEEP_CHECKPOINTS', '1') == '0':
-                    prev_ckpt = os.path.join(FLAGS.logdir, 'ckpt_{}.pt'.format(step - FLAGS.save_step))
-                    if os.path.exists(prev_ckpt):
-                        os.remove(prev_ckpt)
+                prev_ckpt = os.path.join(FLAGS.logdir, 'ckpt_{}.pt'.format(step - FLAGS.save_step))
+                if os.path.exists(prev_ckpt):
+                    os.remove(prev_ckpt)
 
             # evaluate
             if FLAGS.eval_step > 0 and step % FLAGS.eval_step == 0:

@@ -40,9 +40,9 @@ double-counted row.
 - LR 0.0002, 5,000-step warmup, dropout 0.1, gradient clip 1.0, diffusion
   `T=1000`, conditional CFG training (10% label dropout), ADA augmentation off.
 - 300,000 updates at batch 64 = 19.2M images seen, the same budget CBDM
-  (300k×64), CM (300k×64) and CORAL (150k×128) each used. Every 50k checkpoint
-  is retained so the budget is auditable; upstream loops delete all but the
-  last, which would make the ranking's dependence on budget unverifiable.
+  (300k×64), CM (300k×64) and CORAL (150k×128) each used. Checkpoints are
+  written every 50k purely for crash resume; as upstream, only the newest is
+  kept.
 - Backbone pinned in the contract and enforced by preflight: ch=128,
   ch_mult=[1,2,2,2], attn=[1], 2 residual blocks, EMA 0.9999. All four upstream
   repos already agree on these, but only by shared flag defaults — a vendored
