@@ -6,6 +6,7 @@ import argparse
 import csv
 import json
 import math
+import shutil
 import sys
 import time
 from collections import defaultdict
@@ -16,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from ltx.comparison import METRIC_DIRECTIONS, mean_std, ranks
+from ltx.comparison import METRIC_DIRECTIONS, mean_std, paired_advantage, ranks
 from ltx.config import load_campaign, LoadedCampaign
 from ltx.state import StateDB
 from ltx.utils import load_runtime_env
@@ -26,6 +27,15 @@ from ltx.utils import load_runtime_env
 # are the Inception PRD endpoints.  Keeping those names makes the JSON / W&B
 # values match the evaluator exactly while the Markdown header explains them.
 METRICS = ("FID", "KID", "IS", "F_8", "F_1_8", "ImprovedPrecision", "Recall")
+
+# The reference every method in this comparison is measured against, matching
+# how CBDM, T2H, CM and CORAL each frame their own gain.
+BASELINE_METHOD = "ddpm"
+
+# Shown as columns in the advantage table: exactly CM's main-table metric set
+# (ICLR 2026, Tab. 2). The remaining metrics still get a full bootstrap CI in
+# summary.json — a 7-metric grid on screen is noise, not evidence.
+HEADLINE_METRICS = ("FID", "KID", "IS", "Recall")
 DISPLAY = {
     "FID": "FID ↓", "KID": "KID ↓", "IS": "IS ↑", "F_8": "F₈ ↑", "F_1_8": "F₁⁄₈ ↑",
     "ImprovedPrecision": "IPR precision ↑", "Recall": "IPR recall ↑",
@@ -77,6 +87,68 @@ def read_text_or_empty(path: Path) -> str:
         return path.read_text(encoding="utf-8")
     except OSError:
         return ""
+
+
+def write_result_files(campaign: LoadedCampaign, output: Path, payload: dict, urls: dict,
+                       lines: list[str], tail_lines: list[str], summary: list, incomplete: list) -> None:
+    """Write summary.json and the consolidated results.log.
+
+    Called before the artifact upload so W&B receives these files with the
+    W&B URLs already embedded, rather than the pre-URL version.
+    """
+    payload["wandb_urls"] = urls
+    (output / "summary.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+    url_lines = [f"- {key}: {url}" for key, url in urls.items() if url] or ["(W&B upload not requested or unavailable)"]
+    results_log = [
+        f"# {campaign.raw['campaign']['name']} — results log",
+        f"generated_at: {time.strftime('%Y-%m-%dT%H:%M:%S%z')}",
+        "",
+        "## Campaign fingerprint",
+        read_text_or_empty(Path(campaign.server["runtime"]["runs_root"]) / campaign.raw["campaign"]["name"] / "campaign_fingerprint.txt").strip() or "(not launched yet)",
+        "",
+        "## Vendor / environment provenance",
+        read_text_or_empty(Path(campaign.server["runtime"]["repos_root"]) / "VENDOR_AND_ENV.txt").strip() or "(missing third_party/VENDOR_AND_ENV.txt)",
+        "",
+        "## Fairness contract",
+        json.dumps(campaign.raw.get("fairness_contract", {}), indent=2, sort_keys=True),
+        "",
+        "## Per-task scheduler status",
+        render_task_status_table(campaign),
+        "",
+        "## W&B links",
+        *url_lines,
+        "",
+        *lines,
+        "",
+        *tail_lines,
+        "",
+        f"## Verdict: {payload['claim_status']}",
+        f"complete cells: {len(summary) - len(incomplete)}/{len(summary)}",
+    ]
+    (output / "results.log").write_text("\n".join(results_log) + "\n", encoding="utf-8")
+    snapshot_campaign_log(campaign, output)
+
+
+def snapshot_campaign_log(campaign: LoadedCampaign, output: Path) -> Path | None:
+    """Copy the live campaign stdout log next to the report.
+
+    `scripts/run_unified_cifar.sh` tees the whole run into
+    runs/<campaign>/logs/run_<ts>.log and this report is still appending to it,
+    so upload a snapshot rather than the file being written: W&B hashes an
+    artifact file, and a file that changes mid-upload can fail the whole
+    artifact. A copy also survives the next run rotating the symlink.
+    """
+    latest = Path(campaign.server["runtime"]["runs_root"]) / campaign.raw["campaign"]["name"] / "latest.log"
+    if not latest.exists():
+        return None
+    destination = output / "campaign_run.log"
+    try:
+        shutil.copyfile(latest, destination)
+    except OSError as exc:
+        print(f"[report] could not snapshot the campaign log: {exc}")
+        return None
+    return destination
 
 
 def render_task_status_table(campaign: LoadedCampaign) -> str:
@@ -241,6 +313,22 @@ def main() -> int:
             for method, rank in ranks(scores, METRIC_DIRECTIONS[metric]).items():
                 by_key[(dataset, method)][f"{metric}_rank"] = rank
 
+    # Every long-tail paper in this comparison frames its gain against plain
+    # DDPM, and three seeds is too few for mean±std alone to answer "is this
+    # difference real?". Bootstrap the paired per-seed differences against the
+    # DDPM row of the same cell, so each method carries a CI95 on its own
+    # advantage rather than only an aggregate it cannot be tested against.
+    for result in summary:
+        baseline_row = by_key.get((result["dataset"], BASELINE_METHOD))
+        for metric in METRICS:
+            if result["method"] == BASELINE_METHOD or baseline_row is None:
+                result[f"vs_{BASELINE_METHOD}_{metric}"] = None
+                continue
+            result[f"vs_{BASELINE_METHOD}_{metric}"] = paired_advantage(
+                result["seed_values"][metric], baseline_row["seed_values"][metric],
+                METRIC_DIRECTIONS[metric],
+            )
+
     tail_summary: list[dict[str, Any]] = []
     tail_grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
     for row in tail_rows:
@@ -301,7 +389,29 @@ def main() -> int:
     lines += [
         "",
         "`IPR` is improved-PRD on VGG16 fc2 with exact k-NN radius k=3. F₈/F₁⁄₈ are Inception PRD endpoints. KID is a deterministic CM-style cubic-kernel estimate (100 subsets, at most 1,000 features each).",
+        "",
+        "Note on `Recall`: this is the Kynkäänniemi et al. improved recall on VGG16-fc2 with k=3, as used by CORAL. CBDM's published `Recall` column is a different estimator (Inception-V3 features, K=5), so its paper numbers are not directly comparable to this column.",
+        "",
+        f"## Advantage over {BASELINE_METHOD.upper()} (paired seeds, bootstrap CI95)",
+        "",
+        f"Each method minus the {BASELINE_METHOD.upper()} row of the same cell, paired on seeds 0/1/2. "
+        "Positive always favours the method; `*` marks a CI95 that excludes zero. "
+        "Columns match CM's main table. Full CI bounds for every metric are in `summary.json`.",
+        "",
+        "| Data | Method | " + " | ".join(f"Δ {DISPLAY[m]}" for m in HEADLINE_METRICS) + " |",
+        "|---|---|" + "---:|" * len(HEADLINE_METRICS),
     ]
+    for row in sorted(summary, key=lambda item: (item["dataset"], item["method"])):
+        if row["method"] == BASELINE_METHOD:
+            continue
+        cells = []
+        for metric in HEADLINE_METRICS:
+            adv = row.get(f"vs_{BASELINE_METHOD}_{metric}")
+            if not adv or adv.get("mean") is None:
+                cells.append("MISSING")
+            else:
+                cells.append(f"{adv['mean']:+.4f}{'*' if adv['winner'] else ''}")
+        lines.append(f"| {row['dataset']} | {row['method']} | " + " | ".join(cells) + " |")
     (output / "table.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     tail_lines = [
@@ -323,6 +433,7 @@ def main() -> int:
     incomplete = [item for item in summary if not item["complete"]]
     urls: dict[str, str] = {}
     visibility_note = ""
+    wrote_result_files = False
     if args.wandb:
         made_public, visibility_note = try_make_project_public(campaign)
         if made_public:
@@ -351,17 +462,30 @@ def main() -> int:
             run.log({"comparison/unified_main_table": wandb.Table(
                 columns=summary_columns, data=[[row.get(key) for key in summary_columns] for row in summary]
             )})
+            advantage_columns = ["dataset", "method", "metric", "delta", "ci95_low", "ci95_high", "significant"]
+            advantage_rows = []
+            for row in summary:
+                if row["method"] == BASELINE_METHOD:
+                    continue
+                for metric in METRICS:
+                    adv = row.get(f"vs_{BASELINE_METHOD}_{metric}")
+                    if not adv or adv.get("mean") is None:
+                        continue
+                    advantage_rows.append([row["dataset"], row["method"], metric, adv["mean"],
+                                           adv["ci95_low"], adv["ci95_high"], adv["winner"]])
+            run.log({f"comparison/advantage_over_{BASELINE_METHOD}": wandb.Table(
+                columns=advantage_columns, data=advantage_rows
+            )})
             for row in summary:
                 for metric in METRICS:
                     value = row.get(f"{metric}_mean")
                     if value is not None:
                         run.summary[f"table/{row['dataset']}/{row['method']}/{metric}"] = value
-            artifact = wandb.Artifact(f"{campaign.raw['campaign']['name']}-report", type="evaluation-report")
-            for path in (output / "per_seed.csv", output / "tail_per_seed.csv", output / "table.md", output / "tail_breakdown.md", output / "summary.json"):
-                artifact.add_file(str(path))
-            run.log_artifact(artifact)
             run.summary["table/incomplete_cells"] = len(incomplete)
             run.summary["table/claim_status"] = payload["claim_status"]
+            # Resolve every URL first, then write the files, then upload them.
+            # Writing after the upload shipped a summary.json with no W&B links
+            # in it and never shipped results.log at all.
             urls["project"] = urls.get("project") or run.get_project_url() or ""
             urls["run"] = run.get_url() or ""
             report_url = build_wandb_report(campaign, lines, tail_lines)
@@ -372,41 +496,28 @@ def main() -> int:
             for key, url in urls.items():
                 if url:
                     run.summary[f"table/url_{key}"] = url
+            write_result_files(campaign, output, payload, urls, lines, tail_lines, summary, incomplete)
+            wrote_result_files = True
+
+            artifact = wandb.Artifact(f"{campaign.raw['campaign']['name']}-report", type="evaluation-report")
+            # campaign_run.log is the whole-campaign stdout (bootstrap, GPU
+            # packing decisions, task launches and failures) — the only place a
+            # reader who cannot see the machine can diagnose a partial run.
+            uploads = [output / "per_seed.csv", output / "tail_per_seed.csv", output / "table.md",
+                       output / "tail_breakdown.md", output / "summary.json", output / "results.log",
+                       output / "campaign_run.log"]
+            for path in uploads:
+                if path.is_file():
+                    artifact.add_file(str(path))
+            run.log_artifact(artifact)
             run.finish(exit_code=0 if not incomplete else 2)
         except Exception as exc:
             print(f"[report] W&B upload failed: {exc}")
 
-    payload["wandb_urls"] = urls
-    (output / "summary.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-
-    url_lines = [f"- {key}: {url}" for key, url in urls.items() if url] or ["(W&B upload not requested or unavailable)"]
-    results_log = [
-        f"# {campaign.raw['campaign']['name']} — results log",
-        f"generated_at: {time.strftime('%Y-%m-%dT%H:%M:%S%z')}",
-        "",
-        "## Campaign fingerprint",
-        read_text_or_empty(Path(campaign.server["runtime"]["runs_root"]) / campaign.raw["campaign"]["name"] / "campaign_fingerprint.txt").strip() or "(not launched yet)",
-        "",
-        "## Vendor / environment provenance",
-        read_text_or_empty(Path(campaign.server["runtime"]["repos_root"]) / "VENDOR_AND_ENV.txt").strip() or "(missing third_party/VENDOR_AND_ENV.txt)",
-        "",
-        "## Fairness contract",
-        json.dumps(campaign.raw.get("fairness_contract", {}), indent=2, sort_keys=True),
-        "",
-        "## Per-task scheduler status",
-        render_task_status_table(campaign),
-        "",
-        "## W&B links",
-        *url_lines,
-        "",
-        *lines,
-        "",
-        *tail_lines,
-        "",
-        f"## Verdict: {payload['claim_status']}",
-        f"complete cells: {len(summary) - len(incomplete)}/{len(summary)}",
-    ]
-    (output / "results.log").write_text("\n".join(results_log) + "\n", encoding="utf-8")
+    # Without --wandb, or if the upload raised before reaching them, the files
+    # are still the local deliverable and must exist either way.
+    if not wrote_result_files:
+        write_result_files(campaign, output, payload, urls, lines, tail_lines, summary, incomplete)
 
     print(f"[report] wrote {output / 'table.md'}; complete cells={len(summary) - len(incomplete)}/{len(summary)}")
     print(f"[report] wrote {output / 'results.log'}")

@@ -47,6 +47,16 @@ double-counted row.
   deterministic CM-style KID (the released cubic MMD estimator, fixed subset
   RNG), Inception Score, Inception PRD F₈ and F₁⁄₈, plus VGG16-fc2
   improved-PRD precision/recall (exact k-NN radius, k=3).
+- **`Recall` is not comparable to CBDM's published `Recall`.** This table uses
+  the Kynkäänniemi et al. improved recall on VGG16-fc2 with k=3, matching
+  CORAL. CBDM's §Metrics instead measures Recall on Inception-V3 features with
+  K=5. Same name, different estimator: do not place the two side by side
+  without saying so. `ImprovedPrecision` is reported here for completeness but
+  appears in no baseline paper's main table.
+- Each non-DDPM row also carries a bootstrap CI95 on its paired-seed advantage
+  over the DDPM row of the same cell, which is how CBDM, T2H, CM and CORAL each
+  frame their own gain. Three seeds is too few for mean ± std to answer
+  "is this difference real?" on its own.
 - A separate `tail_breakdown.md`: per-class FID and CM's class-index
   Many/Medium/Few FID groups. These use the main table's 50k class-uniform
   sample rather than CM's separately sampled 20k/split protocol, so they are

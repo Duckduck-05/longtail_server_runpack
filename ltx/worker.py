@@ -3,10 +3,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import queue
-import re
-import shutil
-import signal
 import subprocess
 import sys
 import threading
@@ -19,7 +15,7 @@ import psutil
 
 from .adapters import make_adapter
 from .config import Task
-from .gpu import gpu_metrics, query_compute_apps
+from .gpu import query_compute_apps
 from .metrics import collect_metrics, latest_tensorboard_scalars
 from .state import StateDB
 from .utils import atomic_write_json, run_capture, shell_join, stable_id
@@ -55,7 +51,6 @@ class Monitor(threading.Thread):
     def run(self):
         while not self.stop_event.wait(self.interval):
             try:
-                disk = shutil.disk_usage(self.run_dir)
                 # Device-level GPU metrics are shared between any tasks packed
                 # onto the same card; also measure this task's own subprocess
                 # footprint so packing decisions and per-run W&B usage stay
@@ -67,15 +62,11 @@ class Monitor(threading.Thread):
                 proc_memory_mb = sum(mb for pid, mb in query_compute_apps().items() if pid in descendant_pids)
                 if proc_memory_mb > 0:
                     self.peak_memory_gb = max(self.peak_memory_gb, proc_memory_mb / 1024)
-                metrics = {
-                    **gpu_metrics(self.gpu_id),
-                    "system/proc_gpu_memory_gb": proc_memory_mb / 1024,
-                    "system/cpu_pct": psutil.cpu_percent(interval=None),
-                    "system/ram_used_gb": psutil.virtual_memory().used / (1024 ** 3),
-                    "system/ram_pct": psutil.virtual_memory().percent,
-                    "system/disk_free_gb": disk.free / (1024 ** 3),
-                    "system/elapsed_hours": (time.time() - psutil.Process(os.getpid()).create_time()) / 3600,
-                }
+                # W&B already logs GPU/CPU/RAM/disk natively into its System tab,
+                # so mirroring them here only duplicated ten series into the
+                # charts. The one thing its built-in cannot express is this
+                # task's own share of a GPU that several tasks are packed onto.
+                metrics = {"system/proc_gpu_memory_gb": proc_memory_mb / 1024}
                 tb = latest_tensorboard_scalars(self.run_dir)
                 for tag, (step, value) in tb.items():
                     if step > self.last_tb_step.get(tag, -1):
@@ -100,23 +91,90 @@ class Monitor(threading.Thread):
                 continue
 
 
+# Direction of each reported generation metric, so W&B shows the right
+# best-value and arrow in run tables instead of guessing.
+_METRIC_GOALS = {
+    "generation/FID": "minimize", "generation/KID": "minimize",
+    "generation/IS": "maximize", "generation/F_8": "maximize", "generation/F_1_8": "maximize",
+    "generation/ImprovedPrecision": "maximize", "generation/Recall": "maximize",
+}
+
+
+def wandb_config(task: Task) -> Dict[str, object]:
+    """The knobs that actually identify and constrain this run.
+
+    ``task.to_dict()`` is a 69-entry dump that buries the protocol under
+    absolute paths, retry policy, and the runner's own W&B settings. Config is
+    what a reader checks to confirm two rows are comparable, so keep exactly
+    the identity and the fairness contract.
+    """
+    train, evaluate = task.train, task.eval
+    config: Dict[str, object] = {
+        "campaign": task.campaign,
+        "dataset": task.dataset.get("name"),
+        "method": task.method,
+        "seed": task.seed,
+        "adapter": task.adapter,
+        "imbalance_factor": task.dataset.get("imbalance_factor"),
+        "upstream_repo": task.repository.get("directory"),
+        "upstream_commit": task.repository.get("commit"),
+        "run_dir": task.run_dir,
+    }
+    for key in ("total_steps", "batch_size", "lr", "warmup", "T", "dropout", "ema_decay"):
+        if key in train:
+            config[f"train/{key}"] = train[key]
+    for key in ("num_images", "guidance_scale", "sample_method", "metric_protocol", "uniform_labels"):
+        if key in evaluate:
+            config[f"eval/{key}"] = evaluate[key]
+    flags = task.method_config.get("flags")
+    if flags:
+        config["method_flags"] = " ".join(map(str, flags))
+    return config
+
+
+def define_wandb_metrics(wb_run) -> None:
+    """Give training curves a real x-axis and the metrics their direction.
+
+    Without this every wandb.log() lands on wandb's auto-incrementing internal
+    _step, so a loss curve is plotted against "number of log calls" rather than
+    the training step it was actually recorded at.
+    """
+    if wb_run is None:
+        return
+    try:
+        wb_run.define_metric("train/global_step")
+        wb_run.define_metric("train/*", step_metric="train/global_step")
+        for name, goal in _METRIC_GOALS.items():
+            wb_run.define_metric(name, summary="last", goal=goal)
+        wb_run.define_metric("generation/tail/*", summary="last", goal="minimize")
+    except Exception as exc:
+        print(f"[ltx] could not define W&B metric axes: {exc}", flush=True)
+
+
 def init_wandb(task: Task, run_dir: Path):
     mode = task.runtime.get("wandb_mode", os.environ.get("WANDB_MODE", "online"))
     try:
         import wandb
         run_id = stable_id(task.campaign, task.id, length=16)
+        dataset = str(task.dataset.get("name", task.stage))
         return wandb.init(
             project=task.runtime.get("wandb_project", os.environ.get("WANDB_PROJECT", "longtail")),
             entity=task.runtime.get("wandb_entity") or os.environ.get("WANDB_ENTITY") or None,
-            name=f"{task.stage}-{task.method}-s{task.seed}",
+            # Name by what identifies the row in the table. The stage name is an
+            # internal adapter-grouping label, so it produced "..._cm-cm-s0",
+            # "..._t2h-t2h-s0", and a meaningless "core" for DDPM/CBDM/CORAL.
+            name=f"{dataset}-{task.method}-s{task.seed}",
             id=run_id,
             resume="allow",
             dir=str(run_dir),
             mode=mode,
-            group=f"{task.campaign}/{task.stage}",
+            # Group the three seeds of one cell/method so W&B aggregates exactly
+            # what the report averages. Grouping by stage instead mixed three
+            # different methods into one group.
+            group=f"{dataset}-{task.method}",
             job_type="train-eval",
             tags=list(dict.fromkeys(task.tags + [task.adapter, task.method, f"seed-{task.seed}"])),
-            config=task.to_dict(),
+            config=wandb_config(task),
             settings=wandb.Settings(start_method="thread"),
         )
     except Exception as exc:
@@ -127,8 +185,6 @@ def init_wandb(task: Task, run_dir: Path):
 def run_phase(phase, env: Dict[str, str], log_path: Path, state: StateDB, task_id: str, wb_run) -> int:
     if phase.skip_if_exists and all(path.exists() for path in phase.skip_if_exists):
         print(f"[ltx] skip phase={phase.name}; outputs exist", flush=True)
-        if wb_run is not None:
-            wb_run.log({f"phase/{phase.name}_skipped": 1})
         return 0
     phase_env = os.environ.copy()
     phase_env.update(env)
@@ -137,7 +193,9 @@ def run_phase(phase, env: Dict[str, str], log_path: Path, state: StateDB, task_i
     print(f"[ltx] phase={phase.name} cwd={phase.cwd}\n[ltx] command={command_text}", flush=True)
     state.heartbeat(task_id, f"phase={phase.name}")
     if wb_run is not None:
-        wb_run.log({"phase/name": phase.name})
+        # The resolved command belongs in config (provenance a reader checks
+        # once), not in log() — logging the phase *name* pushed a string into
+        # the metric stream, where W&B renders it as a junk panel.
         wb_run.config.update({f"command_{phase.name}": command_text}, allow_val_change=True)
     with log_path.open("a", encoding="utf-8") as log:
         log.write(f"\n===== PHASE {phase.name} =====\n{command_text}\n")
@@ -152,13 +210,10 @@ def run_phase(phase, env: Dict[str, str], log_path: Path, state: StateDB, task_i
             for line in proc.stdout:
                 sys.stdout.write(line)
                 log.write(line)
-                if "loss=" in line or "loss:" in line:
-                    match = re.search(r"loss[=:]\s*([0-9.eE+-]+)", line)
-                    if match and wb_run is not None:
-                        try:
-                            wb_run.log({"train/loss_stdout": float(match.group(1))})
-                        except ValueError:
-                            pass
+                # No loss scraping from stdout here: every method writes the
+                # same scalars to TensorBoard, which the Monitor mirrors with
+                # their true training step. Scraping tqdm's postfix produced a
+                # second, step-less copy of the same curve.
                 if int(time.time()) % 15 == 0:
                     state.heartbeat(task_id, f"phase={phase.name} pid={proc.pid}")
         except KeyboardInterrupt:
@@ -240,6 +295,7 @@ def main() -> None:
     os.environ.setdefault("WANDB_DIR", str(run_dir / "wandb"))
 
     wb_run = init_wandb(task, run_dir)
+    define_wandb_metrics(wb_run)
     if wb_run is not None:
         wb_run.summary["status"] = "running"
         wb_run.summary["gpu_id"] = args.gpu
@@ -253,7 +309,13 @@ def main() -> None:
     try:
         adapter = make_adapter(task.adapter, Path(args.root))
         phases = adapter.phases(task, batch_size=batch_size)
-        env = {"CUDA_VISIBLE_DEVICES": str(args.gpu), "LTX_TASK_ID": task.id, "LTX_RUN_DIR": str(run_dir)}
+        # CBDM/CORAL/OC's own main.py calls wandb.init(project="longtail-baselines", ...)
+        # during --train, hardcoded and disconnected from this task's run (wrong
+        # project, no id, name collides across every task/seed). Disabling wandb
+        # inside the subprocess is a no-op for it; the real loss curve already
+        # reaches this task's W&B run via the Monitor's tensorboard mirror below.
+        env = {"CUDA_VISIBLE_DEVICES": str(args.gpu), "LTX_TASK_ID": task.id, "LTX_RUN_DIR": str(run_dir),
+               "WANDB_MODE": "disabled"}
         for phase in phases:
             code = run_phase(phase, env, stdout_log, state, task.id, wb_run)
             if code != 0:

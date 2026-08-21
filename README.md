@@ -55,8 +55,9 @@ runs/unified_cifar_v1/report/tail_breakdown.md
 runs/unified_cifar_v1/report/per_seed.csv
 runs/unified_cifar_v1/report/tail_per_seed.csv
 runs/unified_cifar_v1/report/summary.json
-runs/unified_cifar_v1/report/results.log   # one self-contained log: fingerprint, vendor/env, per-task status, table, W&B links
-runs/unified_cifar_v1/latest.log           # full stdout of the most recent run (symlink, updates every launch)
+runs/unified_cifar_v1/report/results.log       # one self-contained log: fingerprint, vendor/env, per-task status, table, W&B links
+runs/unified_cifar_v1/report/campaign_run.log  # snapshot of the whole-campaign stdout (bootstrap, GPU packing, launches, failures)
+runs/unified_cifar_v1/latest.log               # live stdout of the most recent run (symlink, updates every launch)
 ```
 
 The same per-seed and aggregate tables plus all task losses, samples, system
@@ -68,10 +69,14 @@ Given the `WANDB_API_KEY` in `.env.local`, the runner (via `--wandb`, which
 `scripts/run_server.sh` always passes) authenticates once at bootstrap, flips
 the project to public-read, and publishes a W&B Report combining the main
 table, the tail breakdown, and per-run comparison panels. The report URL is
-printed at the end of the run and recorded in `results.log` and
-`summary.json`. Both the visibility change and the report are best-effort:
-if either call fails, the run still completes and prints the one-time manual
-UI step instead.
+printed at the end of the run and recorded in `results.log` and `summary.json`.
+
+Every file listed above is uploaded to that run as the `evaluation-report`
+artifact, so someone running this on your behalf can hand over a W&B link
+alone — the tables, the per-task status, and the full campaign stdout are all
+readable there without shell access. Both the visibility change and the report
+are best-effort: if either call fails, the run still completes and prints the
+one-time manual UI step instead.
 
 This is a new controlled benchmark, so it must be described as such in a
 paper—not as a bit-for-bit reproduction of any individual paper table. Full

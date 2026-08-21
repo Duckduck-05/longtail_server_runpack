@@ -49,6 +49,15 @@ def _flatten(prefix,obj,out):
         for k,v in obj.items(): _flatten(f"{prefix}/{k}" if prefix else str(k),v,out)
     elif isinstance(obj,(int,float)): _put(out,prefix,obj)
 
+# Sample counts, seeds and protocol constants are provenance, not results.
+# They belong in the run's config and the report's JSON, not plotted next to
+# FID as if they were something a reader should compare across methods.
+_BOOKKEEPING = ("num_generated", "num_reference", "generated", "reference",
+                "seed", "samples", "label_histogram")
+
+def _is_bookkeeping(key: str) -> bool:
+    return key.rsplit("/", 1)[-1] in _BOOKKEEPING
+
 def collect_metrics(run_dir: Path)->Dict[str,float]:
     out={}
     semantic=run_dir/"semantic_metrics.json"
@@ -62,9 +71,24 @@ def collect_metrics(run_dir: Path)->Dict[str,float]:
         for k,v in parse_text_metrics(path).items(): out[f"generation/{k}"]=v
     for path in run_dir.rglob("metrics*.json"):
         if path.name=="metrics.collected.json": continue
-        try: _flatten("generation",json.loads(path.read_text()),out)
-        except Exception: pass
-    return out
+        try: payload = json.loads(path.read_text())
+        except Exception: continue
+        if not isinstance(payload, dict): continue
+        if isinstance(payload.get("metrics"), dict):
+            # evaluate_coral2025.py wraps FID/IS/KID/PRD in a "metrics" key
+            # alongside "protocol"/"label_histogram" metadata. Flattening the
+            # whole payload buried every metric two levels deep as
+            # generation/metrics/FID and swept protocol constants in as if
+            # they were metrics; unwrap to the clean generation/FID instead.
+            _flatten("generation", payload["metrics"], out)
+        elif isinstance(payload.get("groups"), dict):
+            # metrics.per_class.json: keep the Many/Medium/Few tail summary,
+            # skip the 100-class per_class breakdown and protocol metadata so
+            # they don't flood the W&B summary with noise.
+            _flatten("generation/tail", payload["groups"], out)
+        else:
+            _flatten("generation", payload, out)
+    return {k: v for k, v in out.items() if not _is_bookkeeping(k)}
 
 def latest_tensorboard_scalars(logdir: Path):
     try:

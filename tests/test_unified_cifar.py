@@ -95,12 +95,13 @@ def test_uniform_label_ports_are_present_in_vendored_sources():
     assert "torch.arange(i, i + batch_size" in t2h
 
 
-def test_unified_report_writes_one_complete_fifteen_row_table(tmp_path, monkeypatch):
+def seed_completed_runs(tmp_path, monkeypatch):
+    """Populate a full 45-task campaign of completed runs under tmp_path."""
     monkeypatch.setenv("LTX_RUNS_ROOT", str(tmp_path / "runs"))
     campaign = load_campaign(ROOT / "configs/unified_cifar.yaml")
     for index, task in enumerate(campaign.tasks):
         run_dir = Path(task.run_dir)
-        run_dir.mkdir(parents=True)
+        run_dir.mkdir(parents=True, exist_ok=True)
         (run_dir / "SUCCESS").write_text("ok\n")
         seed = task.seed
         metrics = {
@@ -117,6 +118,19 @@ def test_unified_report_writes_one_complete_fifteen_row_table(tmp_path, monkeypa
             group: {"FID": 12.0 + index / 100 + group_index / 10, "generated": 15000, "reference": 15000}
             for group_index, group in enumerate(("Many", "Medium", "Few"))
         }}))
+    return campaign
+
+
+def load_report_module():
+    spec = importlib.util.spec_from_file_location("unified_report", ROOT / "tools/report_unified_cifar.py")
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_unified_report_writes_one_complete_fifteen_row_table(tmp_path, monkeypatch):
+    seed_completed_runs(tmp_path, monkeypatch)
 
     spec = importlib.util.spec_from_file_location("unified_report", ROOT / "tools/report_unified_cifar.py")
     assert spec and spec.loader
@@ -126,9 +140,46 @@ def test_unified_report_writes_one_complete_fifteen_row_table(tmp_path, monkeypa
     monkeypatch.setattr("sys.argv", ["report", "--config", str(ROOT / "configs/unified_cifar.yaml"), "--output", str(output)])
     assert module.main() == 0
     table = (output / "table.md").read_text(encoding="utf-8")
-    assert table.count("| cifar") == 15
-    assert "KID ↓" in table
+    # table.md now holds two tables; count rows per section so the main
+    # 15-row assertion cannot be satisfied by the advantage table's rows.
+    main_table, _, advantage_table = table.partition("## Advantage over")
+    assert main_table.count("| cifar") == 15
+    # 4 non-baseline methods x 3 cells, each compared against that cell's DDPM
+    assert advantage_table.count("| cifar") == 12
+    assert "ddpm" not in advantage_table.split("|---")[-1]
+    assert "KID ↓" in main_table
     assert (output / "tail_breakdown.md").is_file()
     payload = json.loads((output / "summary.json").read_text(encoding="utf-8"))
     assert len(payload["aggregate"]) == 15
     assert all(row["complete"] for row in payload["aggregate"])
+    # every non-baseline row carries a bootstrap CI on its paired-seed gain
+    for row in payload["aggregate"]:
+        if row["method"] == "ddpm":
+            continue
+        advantage = row["vs_ddpm_FID"]
+        assert advantage["n_pairs"] == 3
+        assert advantage["ci95_low"] <= advantage["mean"] <= advantage["ci95_high"]
+
+
+def test_report_bundle_includes_both_logs(tmp_path, monkeypatch):
+    """Everything a remote reader needs must land in the report dir, since it
+    is exactly the file set uploaded to W&B as the report artifact."""
+    seed_completed_runs(tmp_path, monkeypatch)
+    campaign_dir = tmp_path / "runs" / "unified_cifar_v1"
+    (campaign_dir / "logs").mkdir(parents=True, exist_ok=True)
+    run_log = campaign_dir / "logs" / "run_20260821T000000Z.log"
+    run_log.write_text("[ltx] gpu slots={0: 4}\n[ltx] campaign finished completed=45 failed=0\n")
+    (campaign_dir / "latest.log").symlink_to(run_log)
+
+    module = load_report_module()
+    output = campaign_dir / "report"
+    monkeypatch.setattr("sys.argv", ["report", "--config", str(ROOT / "configs/unified_cifar.yaml"),
+                                     "--output", str(output)])
+    assert module.main() == 0
+
+    for name in ("per_seed.csv", "tail_per_seed.csv", "table.md", "tail_breakdown.md",
+                 "summary.json", "results.log", "campaign_run.log"):
+        assert (output / name).is_file(), f"missing {name} from the hand-off bundle"
+    # the campaign stdout is snapshotted, not linked, so log rotation cannot orphan it
+    assert not (output / "campaign_run.log").is_symlink()
+    assert "campaign finished" in (output / "campaign_run.log").read_text()

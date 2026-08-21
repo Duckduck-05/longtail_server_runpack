@@ -56,8 +56,9 @@ Kết quả paper-facing chỉ đọc từ:
 runs/unified_cifar_v1/report/table.md
 runs/unified_cifar_v1/report/per_seed.csv
 runs/unified_cifar_v1/report/summary.json
-runs/unified_cifar_v1/report/results.log   # bảng + fingerprint + trạng thái từng task + link W&B, gộp một file
-runs/unified_cifar_v1/latest.log           # toàn bộ stdout của lần chạy gần nhất (symlink)
+runs/unified_cifar_v1/report/results.log       # bảng + fingerprint + trạng thái từng task + link W&B, gộp một file
+runs/unified_cifar_v1/report/campaign_run.log  # snapshot stdout toàn campaign (bootstrap, GPU packing, launch, lỗi)
+runs/unified_cifar_v1/latest.log               # stdout live của lần chạy gần nhất (symlink)
 ```
 
 W&B có năm run groups theo cell/method, loss và system telemetry theo task,
@@ -66,6 +67,11 @@ report artifact. Report fail-closed nếu một trong ba seed hoặc metric bị
 Với `WANDB_API_KEY` đã có trong `.env.local`, `--wandb` (script chính luôn
 bật cờ này) sẽ tự đặt project thành public-read và tạo một W&B Report tổng
 hợp bảng + biểu đồ; link report được in ra cuối lệnh và ghi vào `results.log`.
+
+Toàn bộ file trong `report/` (kể cả `results.log` và `campaign_run.log`) được
+upload thành artifact `evaluation-report` của run report. Nghĩa là người chạy
+hộ chỉ cần đưa lại **một link W&B** — bảng, trạng thái từng task, và toàn bộ
+stdout của campaign đều đọc được trên đó, không cần quyền vào máy.
 
 Không gọi kết quả này là “paper reproduction”: đây là protocol chung mới với
 source-native implementations. Chi tiết khoa học ở
