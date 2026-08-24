@@ -11,6 +11,7 @@ from .config import Task
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS tasks (
     id TEXT PRIMARY KEY, payload TEXT NOT NULL, status TEXT NOT NULL, priority INTEGER NOT NULL,
+    seq INTEGER NOT NULL DEFAULT 0,
     attempt INTEGER NOT NULL DEFAULT 0, gpu_id INTEGER, pid INTEGER, created_at REAL NOT NULL,
     started_at REAL, finished_at REAL, exit_code INTEGER, message TEXT, heartbeat_at REAL
 );
@@ -50,12 +51,17 @@ class StateDB:
                 self.conn.execute("INSERT INTO metadata(key,value) VALUES('campaign_fingerprint',?)", (campaign_fingerprint,))
         now = time.time()
         with self.conn:
-            for task in tasks:
-                self.conn.execute("INSERT OR IGNORE INTO tasks(id,payload,status,priority,created_at) VALUES(?,?,'pending',?,?)",
-                                  (task.id, json.dumps(task.to_dict(), sort_keys=True), task.priority, now))
+            # seq preserves the campaign's declared (priority, seed, stage,
+            # method) order (see config.py) so a fair-comparison campaign
+            # launches seed-major/stage order instead of the task id's hash
+            # order, which looked like arbitrary seed jumps to a reader
+            # watching the queue drain.
+            for seq, task in enumerate(tasks):
+                self.conn.execute("INSERT OR IGNORE INTO tasks(id,payload,status,priority,seq,created_at) VALUES(?,?,'pending',?,?,?)",
+                                  (task.id, json.dumps(task.to_dict(), sort_keys=True), task.priority, seq, now))
 
     def rows(self, status: Optional[str] = None) -> List[Dict[str, Any]]:
-        q = "SELECT * FROM tasks" + (" WHERE status=?" if status else "") + " ORDER BY priority DESC,id"
+        q = "SELECT * FROM tasks" + (" WHERE status=?" if status else "") + " ORDER BY priority DESC,seq"
         cur = self.conn.execute(q, (status,) if status else ())
         return [dict(r) for r in cur.fetchall()]
 

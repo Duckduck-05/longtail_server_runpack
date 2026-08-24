@@ -151,19 +151,48 @@ def define_wandb_metrics(wb_run) -> None:
         print(f"[ltx] could not define W&B metric axes: {exc}", flush=True)
 
 
+def _resolve_wandb_run_identity(task: Task, run_dir: Path) -> tuple[str, str]:
+    """Resume the same W&B run only when *this* run_dir is resuming a real
+    local checkpoint, not just whenever the same (campaign, task.id) recurs.
+
+    A run id keyed only on task identity collided with a zombie/crashed run
+    left over from an earlier, unrelated attempt (different box, wiped
+    ``runs/`` dir) and spliced that old history onto a fresh run's step
+    counter, producing a step axis that jumps backwards. The id (and a
+    matching human-readable start-time label for the display name, so a
+    stale attempt is recognizable in the run list without opening it) are
+    now stamped with this run_dir's first-seen time and cached next to its
+    checkpoint: a crash-resume in the same run_dir reuses the cached
+    id/label (one continuous curve, stable name), while a fresh run_dir
+    always mints a new pair.
+    """
+    marker = run_dir / ".wandb_run_id"
+    if marker.exists():
+        cached = marker.read_text(encoding="utf-8").strip().split("\n")
+        if len(cached) == 2 and cached[0]:
+            return cached[0], cached[1]
+    now = time.time()
+    run_id = stable_id(task.campaign, task.id, now, length=16)
+    label = time.strftime("%Y%m%d-%H%M%S", time.gmtime(now))
+    marker.write_text(f"{run_id}\n{label}", encoding="utf-8")
+    return run_id, label
+
+
 def init_wandb(task: Task, run_dir: Path):
     mode = task.runtime.get("wandb_mode", os.environ.get("WANDB_MODE", "online"))
     try:
         import wandb
-        run_id = stable_id(task.campaign, task.id, length=16)
+        run_id, start_label = _resolve_wandb_run_identity(task, run_dir)
         dataset = str(task.dataset.get("name", task.stage))
         return wandb.init(
             project=task.runtime.get("wandb_project", os.environ.get("WANDB_PROJECT", "longtail")),
             entity=task.runtime.get("wandb_entity") or os.environ.get("WANDB_ENTITY") or None,
-            # Name by what identifies the row in the table. The stage name is an
-            # internal adapter-grouping label, so it produced "..._cm-cm-s0",
-            # "..._t2h-t2h-s0", and a meaningless "core" for DDPM/CBDM/CORAL.
-            name=f"{dataset}-{task.method}-s{task.seed}",
+            # Name by what identifies the row in the table, plus this attempt's
+            # start time: the stage name is an internal adapter-grouping label
+            # ("..._cm-cm-s0", "..._t2h-t2h-s0", meaningless "core" for
+            # DDPM/CBDM/CORAL), and an un-dated name is exactly what let a
+            # fresh attempt look like a continuation of an old crashed one.
+            name=f"{dataset}-{task.method}-s{task.seed}-{start_label}",
             id=run_id,
             resume="allow",
             dir=str(run_dir),

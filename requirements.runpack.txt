@@ -14,3 +14,10 @@ jsonschema==4.23.0
 wandb==0.19.6
 wandb-workspaces==0.1.9
 pytest==8.3.4
+# None of the vendored method repos ship their own requirements file, so
+# their hard, unconditionally-imported deps are pinned here instead.
+pytorch-metric-learning==2.7.0   # coral-lt-diffusion/diffusion.py
+scikit-image==0.24.0             # CBDM-pytorch/utils/augmentation.py, also
+                                  # reached via symlink by coral/OC_LT/ImbDiff-CM
+matplotlib==3.9.2                # CBDM-pytorch/score/prd_score.py, same symlink fan-out
+ipdb==0.13.13                    # OC_LT/diffusion.py and friends
