@@ -28,8 +28,12 @@ def test_common_kid_is_finite_and_reproducible_with_its_locked_subset_seed():
 
 def test_unified_matrix_is_one_nonduplicated_fair_table():
     campaign = load_campaign(ROOT / "configs/unified_cifar.yaml")
-    assert len(campaign.tasks) == 45
-    expected = {"ddpm", "cbdm", "t2h", "cm", "coral"}
+    contract = campaign.raw["fairness_contract"]
+    expected = set(contract["methods"])
+    # Derived from the contract rather than hardcoded, so adding a method is a
+    # deliberate one-line contract edit instead of a test that fails opaquely.
+    assert expected == {"ddpm", "cbdm", "t2h", "cm", "coral", "ccua"}
+    assert len(campaign.tasks) == len(contract["cells"]) * len(expected) * len(contract["seeds"]) == 54
     assert {task.method for task in campaign.tasks} == expected
     assert "oc" not in expected
     by_cell = {}
@@ -98,15 +102,71 @@ def test_uniform_label_ports_are_present_in_vendored_sources():
     coral_main = (ROOT / "third_party/coral-lt-diffusion/main.py").read_text(encoding="utf-8")
     coral_diffusion = (ROOT / "third_party/coral-lt-diffusion/diffusion.py").read_text(encoding="utf-8")
     t2h = (ROOT / "third_party/OC_LT/ddpm_gen.py").read_text(encoding="utf-8")
+    ccua = (ROOT / "third_party/CCUA-DDPM/main.py").read_text(encoding="utf-8")
     assert "flags.DEFINE_bool('uniform_labels'" in coral_main
     assert "labels=forced_labels" in coral_main
     assert "method='cfg', labels=None" in coral_diffusion
     assert "flags.DEFINE_bool('uniform_labels'" in t2h
     assert "torch.arange(i, i + batch_size" in t2h
+    assert "flags.DEFINE_bool('uniform_labels'" in ccua
+    assert "torch.arange(i, i + batch_size) % len(classes)" in ccua
+
+
+def test_ccua_export_redirects_rather_than_duplicating_the_sample_array():
+    """A 50k CIFAR array is ~600 MB; writing both the upstream path and ours
+    would cost ~11 GB across an 18-task campaign on a disk-guarded box."""
+    ccua = (ROOT / "third_party/CCUA-DDPM/main.py").read_text(encoding="utf-8")
+    assert "flags.DEFINE_string('sample_output'" in ccua
+    assert "_ltx_samples_path = FLAGS.sample_output or _ltx_upstream" in ccua
+    # exactly one array save and one label save survive the redirect
+    assert ccua.count("np.save(_ltx_samples_path, images)") == 1
+    assert ccua.count("np.save(_ltx_labels_path, labels)") == 1
+    assert "np.save(os.path.join(FLAGS.logdir, '{}_{}_samples_ema_{}.npy'" not in ccua
+
+
+def test_ccua_row_is_the_alignment_contrastive_pair_alone():
+    """CCUA shares a codebase with CBDM and T2H, so its siblings are named off
+    explicitly: an upstream default flip must not silently retitle this row."""
+    campaign = load_campaign(ROOT / "configs/unified_cifar.yaml")
+    tasks = [t for t in campaign.tasks if t.method == "ccua"]
+    assert len(tasks) == 9
+    from ltx.adapters.ccua import CCUAAdapter
+    phases = CCUAAdapter(ROOT).phases(tasks[0])
+    train = " ".join(phases[0].command)
+    assert "--nocbdm" in train and "--notransfer_x0" in train
+    assert "--ccua_al=1.0" in train and "--ccua_ucl=1.0" in train
+    # the paper applies batch resample to ImageNet-LT/TinyImageNet-LT and states
+    # it is not used on CIFAR-LT
+    assert "--brs" not in train
+    # backbone pinned explicitly at train *and* sample time (sample() rebuilds
+    # the UNet from flags, so an omission there would load into a wrong shape)
+    evaluate = " ".join(phases[1].command)
+    for flag in ("--ch=128", "--num_res_blocks=2", "--ema_decay=0.9999"):
+        assert flag in train and flag in evaluate
+    assert "--uniform_labels" in evaluate
+    assert "--sample_method=ddpm" in evaluate and "--ddim_skip_step=1" in evaluate
+    assert "--kid" in phases[-1].command and "--per-class-output" in phases[-1].command
+
+
+def test_ccua_resume_asks_for_the_remaining_budget_not_a_second_full_run(tmp_path):
+    """Upstream always iterates range(0, total_steps) and names checkpoints
+    step + ckpt_step, so passing the full budget on resume would train it
+    twice and overshoot the locked 300k contract."""
+    from ltx.adapters.ccua import CCUAAdapter
+    campaign = load_campaign(ROOT / "configs/unified_cifar.yaml")
+    task = replace([t for t in campaign.tasks if t.method == "ccua"][0], run_dir=str(tmp_path / "run"))
+
+    fresh = " ".join(CCUAAdapter(ROOT).phases(task)[0].command)
+    assert "--total_steps=300001" in fresh and "--resume" not in fresh
+
+    (tmp_path / "run" / "ckpt_50000.pt").write_bytes(b"")
+    resumed = " ".join(CCUAAdapter(ROOT).phases(task)[0].command)
+    assert "--total_steps=250001" in resumed
+    assert "--resume" in resumed and "--ckpt_step=50000" in resumed
 
 
 def seed_completed_runs(tmp_path, monkeypatch):
-    """Populate a full 45-task campaign of completed runs under tmp_path."""
+    """Populate a full campaign of completed runs under tmp_path."""
     monkeypatch.setenv("LTX_RUNS_ROOT", str(tmp_path / "runs"))
     campaign = load_campaign(ROOT / "configs/unified_cifar.yaml")
     for index, task in enumerate(campaign.tasks):
@@ -139,8 +199,11 @@ def load_report_module():
     return module
 
 
-def test_unified_report_writes_one_complete_fifteen_row_table(tmp_path, monkeypatch):
-    seed_completed_runs(tmp_path, monkeypatch)
+def test_unified_report_writes_one_complete_row_per_cell_and_method(tmp_path, monkeypatch):
+    campaign = seed_completed_runs(tmp_path, monkeypatch)
+    contract = campaign.raw["fairness_contract"]
+    cells, methods = len(contract["cells"]), len(contract["methods"])
+    rows = cells * methods
 
     spec = importlib.util.spec_from_file_location("unified_report", ROOT / "tools/report_unified_cifar.py")
     assert spec and spec.loader
@@ -151,16 +214,17 @@ def test_unified_report_writes_one_complete_fifteen_row_table(tmp_path, monkeypa
     assert module.main() == 0
     table = (output / "table.md").read_text(encoding="utf-8")
     # table.md now holds two tables; count rows per section so the main
-    # 15-row assertion cannot be satisfied by the advantage table's rows.
+    # one-row-per-cell-and-method assertion cannot be satisfied by the
+    # advantage table's rows.
     main_table, _, advantage_table = table.partition("## Advantage over")
-    assert main_table.count("| cifar") == 15
-    # 4 non-baseline methods x 3 cells, each compared against that cell's DDPM
-    assert advantage_table.count("| cifar") == 12
+    assert main_table.count("| cifar") == rows
+    # every non-baseline method x every cell, each compared against that cell's DDPM
+    assert advantage_table.count("| cifar") == (methods - 1) * cells
     assert "ddpm" not in advantage_table.split("|---")[-1]
     assert "KID ↓" in main_table
     assert (output / "tail_breakdown.md").is_file()
     payload = json.loads((output / "summary.json").read_text(encoding="utf-8"))
-    assert len(payload["aggregate"]) == 15
+    assert len(payload["aggregate"]) == rows
     assert all(row["complete"] for row in payload["aggregate"])
     # every non-baseline row carries a bootstrap CI on its paired-seed gain
     for row in payload["aggregate"]:

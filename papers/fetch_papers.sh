@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Fetch the source papers for the five methods in the unified CIFAR-LT table.
+# Fetch the source papers for the six methods in the unified CIFAR-LT table.
 #
 # PDFs are not committed (see papers/.gitignore): they are third-party
 # copyrighted works and one is ~23 MB. This script re-fetches them on demand
@@ -76,9 +76,14 @@ local_or_manual cm-iclr2026-hong.pdf \
 fetch coral-neurips2025-rodriguez.pdf \
   "https://arxiv.org/pdf/2506.15933" "arXiv:2506.15933" || status=1
 
+# CCUA — arXiv preprint (v3, Jun 2026). The repository ships a U-Net (DDPM) and
+# a DiT/SiT pipeline; only the U-Net one is in this table.
+fetch ccua-arxiv2507.09052-chen.pdf \
+  "https://arxiv.org/pdf/2507.09052" "arXiv:2507.09052" || status=1
+
 echo
 if [[ "$status" -eq 0 ]]; then
-  echo "[papers] all 5 papers present."
+  echo "[papers] all 6 papers present."
 else
   echo "[papers] some downloads failed; see warnings above." >&2
 fi

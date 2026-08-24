@@ -16,7 +16,7 @@ campaign:
 
 fairness_contract:
   cells: [cifar10lt_if100, cifar10lt_if1000, cifar100lt_if100]
-  methods: [ddpm, cbdm, t2h, cm, coral]
+  methods: [ddpm, cbdm, t2h, cm, coral, ccua]
   seeds: [0, 1, 2]
   # 300k x batch 64 = 19.2M images seen, which is exactly the data budget of
   # CBDM (300k x 64), CM (300k x 64) and CORAL (150k x 128). At the previous
@@ -41,6 +41,10 @@ fairness_contract:
   metric_protocol: unified_cifar_v1
 
 repositories:
+  ccua:
+    url: https://github.com/C-Fun/Contrastive-Conditional-Unconditional-Alignment-for-Long-tailed-Diffusion-Model.git
+    commit: baff9def6cfd553d4452d10eab0bac66ec2727aa
+    directory: CCUA-DDPM
   coral:
     url: https://github.com/SankarLab/coral-lt-diffusion.git
     commit: 62c9dfad2da13f5be0f28975e5cd36727c1acc7a
@@ -103,6 +107,18 @@ common_eval: &common_eval
   per_class_metrics_file: metrics.per_class.json
   longtail_groups: cm_three_way
 
+# CCUA = alignment loss + unsupervised contrastive loss. The weights are
+# 1.0/1.0 because that is the only configuration upstream ships for its U-Net
+# pipeline; the paper's 0.05/0.05 is tuned for the DiT/SiT ImageNet-LT pipeline,
+# whose latent-space loss scales are not comparable. Batch resample stays off:
+# the paper applies it to ImageNet-LT/TinyImageNet-LT and states explicitly that
+# it is not used on CIFAR-LT.
+ccua_method: &ccua_method
+  name: ccua
+  ccua_al: 1.0
+  ccua_ucl: 1.0
+  brs: false
+
 stages:
   - name: c10_if100_core
     adapter: coral
@@ -131,6 +147,14 @@ stages:
     methods: [{name: cm, upstream_method: cm}]
     seeds: [0, 1, 2]
     tags: [unified-cifar-v1, cifar10lt, if100, cm]
+  - name: c10_if100_ccua
+    adapter: ccua
+    dataset: {name: cifar10lt_if100, data_type: cifar10lt, imbalance_factor: 0.01, split_seed: 0, num_class: 10, img_size: 32, root: "${LTX_DATA_ROOT:-./data}"}
+    train: *common_train
+    eval: {<<: *common_eval, sample_method: ddpm, ddim_skip_step: 1}
+    methods: [*ccua_method]
+    seeds: [0, 1, 2]
+    tags: [unified-cifar-v1, cifar10lt, if100, ccua]
 
   - name: c10_if1000_core
     adapter: coral
@@ -159,6 +183,14 @@ stages:
     methods: [{name: cm, upstream_method: cm}]
     seeds: [0, 1, 2]
     tags: [unified-cifar-v1, cifar10lt, if1000, cm]
+  - name: c10_if1000_ccua
+    adapter: ccua
+    dataset: {name: cifar10lt_if1000, data_type: cifar10lt, imbalance_factor: 0.001, split_seed: 0, num_class: 10, img_size: 32, root: "${LTX_DATA_ROOT:-./data}"}
+    train: *common_train
+    eval: {<<: *common_eval, sample_method: ddpm, ddim_skip_step: 1}
+    methods: [*ccua_method]
+    seeds: [0, 1, 2]
+    tags: [unified-cifar-v1, cifar10lt, if1000, ccua]
 
   - name: c100_if100_core
     adapter: coral
@@ -187,5 +219,13 @@ stages:
     methods: [{name: cm, upstream_method: cm}]
     seeds: [0, 1, 2]
     tags: [unified-cifar-v1, cifar100lt, if100, cm]
+  - name: c100_if100_ccua
+    adapter: ccua
+    dataset: {name: cifar100lt_if100, data_type: cifar100lt, imbalance_factor: 0.01, split_seed: 0, num_class: 100, img_size: 32, root: "${LTX_DATA_ROOT:-./data}"}
+    train: *common_train
+    eval: {<<: *common_eval, sample_method: ddpm, ddim_skip_step: 1}
+    methods: [*ccua_method]
+    seeds: [0, 1, 2]
+    tags: [unified-cifar-v1, cifar100lt, if100, ccua]
 
 aggregation: {enabled: false}

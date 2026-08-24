@@ -21,3 +21,5 @@ scikit-image==0.24.0             # CBDM-pytorch/utils/augmentation.py, also
                                   # reached via symlink by coral/OC_LT/ImbDiff-CM
 matplotlib==3.9.2                # CBDM-pytorch/score/prd_score.py, same symlink fan-out
 ipdb==0.13.13                    # OC_LT/diffusion.py and friends
+einops==0.8.0                    # CCUA-DDPM/clr.py (contrastive loss)
+info-nce-pytorch==0.1.4          # CCUA-DDPM/clr.py provides `info_nce`

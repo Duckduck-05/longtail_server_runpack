@@ -5,8 +5,20 @@ from ltx.metrics import collect_metrics
 from ltx.worker import wandb_config
 
 
+def unified_campaign():
+    return load_campaign("configs/unified_cifar.yaml")
+
+
 def unified_tasks():
-    return load_campaign("configs/unified_cifar.yaml").tasks
+    return unified_campaign().tasks
+
+
+def expected_counts():
+    """Row/group counts derived from the contract, not hardcoded, so adding a
+    method is a deliberate contract edit rather than an opaque test failure."""
+    contract = unified_campaign().raw["fairness_contract"]
+    cells, methods, seeds = (len(contract[k]) for k in ("cells", "methods", "seeds"))
+    return cells * methods * seeds, cells * methods
 
 
 def run_name(task):
@@ -24,8 +36,9 @@ def test_run_names_are_unique_and_free_of_stage_artifacts():
     and a meaningless "core" for DDPM/CBDM/CORAL. The name must identify the
     table row: dataset, method, seed."""
     tasks = unified_tasks()
+    total, _ = expected_counts()
     names = [run_name(t) for t in tasks]
-    assert len(names) == len(set(names)) == 45
+    assert len(names) == len(set(names)) == total == 54
     for task, name in zip(tasks, names):
         assert "core" not in name
         assert name == f"{task.dataset['name']}-{task.method}-s{task.seed}"
@@ -38,10 +51,11 @@ def test_runs_group_by_cell_and_method_so_seeds_aggregate():
     that is what W&B must group. Grouping by stage put three different methods
     in one group, which cannot produce a seed mean/std band."""
     tasks = unified_tasks()
+    _, expected_groups = expected_counts()
     groups = {}
     for task in tasks:
         groups.setdefault(run_group(task), set()).add(task.seed)
-    assert len(groups) == 15
+    assert len(groups) == expected_groups == 18
     for group, seeds in groups.items():
         assert seeds == {0, 1, 2}, f"{group} has seeds {seeds}"
 

@@ -1,6 +1,6 @@
 # Runbook — Unified CIFAR-LT table
 
-**Scope hiện tại: chỉ CIFAR-100-LT** (15 task — CIFAR-10-LT sẽ chạy sau).
+**Scope hiện tại: chỉ CIFAR-100-LT** (18 task — CIFAR-10-LT sẽ chạy sau).
 Trên server CUDA, ở root của runpack độc lập này chạy:
 
 ```bash
@@ -10,9 +10,9 @@ bash scripts/run_server_c100.sh
 Không cần clone `Longtail` hay thư mục nào khác. Lệnh tự tạo/cập nhật conda
 environment từ `environment.yml`, bootstrap các third-party đã vendored, đọc
 `.env.local`, tự tải CIFAR-100 bằng `torchvision`, tạo metric assets, rồi
-chạy/resume campaign 15 task (`configs/unified_cifar_c100.yaml`).
+chạy/resume campaign 18 task (`configs/unified_cifar_c100.yaml`).
 
-Khi nào cần chạy đủ cả CIFAR-10-LT + CIFAR-100-LT (45 task, protocol khoá
+Khi nào cần chạy đủ cả CIFAR-10-LT + CIFAR-100-LT (54 task, protocol khoá
 cứng gốc), dùng `bash scripts/run_server.sh` thay thế — cùng máy, cùng
 environment, không cần setup gì thêm.
 
@@ -42,7 +42,7 @@ matrix dưới đây; bản đang chạy (`configs/unified_cifar_c100.yaml`,
 methods/seeds/budget/contract, chỉ khác `fairness_contract.cells` còn một cell.
 
 - Cells: CIFAR-10-LT IF100, CIFAR-10-LT IF1000, CIFAR-100-LT IF100.
-- Methods: DDPM, CBDM, T2H, CM, CORAL.
+- Methods: DDPM, CBDM, T2H, CM, CORAL, CCUA.
 - Seeds: 0, 1, 2 cho mọi data × method.
 - Train: 300,000 updates; batch 64; LR 2e-4; T=1000; conditional CFG;
   exponential LT split với `split_seed=0`.
@@ -55,8 +55,10 @@ methods/seeds/budget/contract, chỉ khác `fairness_contract.cells` còn một 
   DDPM 1,000 reverse steps, một shared evaluator cho FID/IS/F₈/F₁⁄₈/IPR.
 
 `OC` là tên repository của paper T2H; không được thêm `oc` thành một method
-thứ sáu. Preflight sẽ fail nếu matrix, seed, budget, sampler family, label
-schedule hoặc metric contract bị lệch.
+riêng — nó sẽ nhân đôi đúng một method. Tương tự, `CCUA` chỉ lấy nhánh U-Net
+(`CCUA-DDPM`); nhánh `CCUA-SiT` dùng backbone Diffusion Transformer nên không
+thuộc bảng này. Preflight sẽ fail nếu matrix, seed, budget, sampler family,
+label schedule hoặc metric contract bị lệch.
 
 ## Theo dõi và kết quả
 
@@ -77,7 +79,7 @@ runs/unified_cifar_c100_v1/report/campaign_run.log  # snapshot stdout toàn camp
 runs/unified_cifar_c100_v1/latest.log               # stdout live của lần chạy gần nhất (symlink)
 ```
 
-W&B có năm run groups theo cell/method, loss và system telemetry theo task,
+W&B có sáu run groups theo cell/method, loss và system telemetry theo task,
 sample grids, `comparison/per_seed`, `comparison/unified_main_table`, và
 report artifact. Report fail-closed nếu một trong ba seed hoặc metric bị thiếu.
 Với `WANDB_API_KEY` đã có trong `.env.local`, `--wandb` (script chính luôn

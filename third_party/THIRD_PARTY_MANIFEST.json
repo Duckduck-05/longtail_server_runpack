@@ -39,6 +39,38 @@
         "utils/augmentation.py": "3fc7752e836ed718ff593bcc8d44fe7b7103d3b5cd81e4258f8f28454410da98"
       }
     },
+    "ccua": {
+      "commit": "baff9def6cfd553d4452d10eab0bac66ec2727aa",
+      "directory": "CCUA-DDPM",
+      "excluded_from_vendoring": [
+        "utils/fld"
+      ],
+      "origin": "https://github.com/C-Fun/Contrastive-Conditional-Unconditional-Alignment-for-Long-tailed-Diffusion-Model.git",
+      "source_worktree_status": [],
+      "subtree": "CCUA-DDPM/DDPM",
+      "vendored_python_sha256": {
+        "clr.py": "7a7503084d1addb9454181bf5174d414b9c9660d938990bf75b6c11181f2b7e0",
+        "dataset.py": "0e919d2c64b3590efa3fd6873571792bf1f1249cb95b1bf04c8b938e168ad7a5",
+        "diffusion.py": "3f955477136b46279d26a62313c0b8053c5290d6cf5af2318de34d3c0e8b9d9d",
+        "evaluate.py": "994f11d250bef52361c6b9a8953904b512d019b5b62cc5fce35e7918e95603d7",
+        "main.py": "fa6006f866efbfd76870a68297e28b840005727467d8c9716a004e8db4595de1",
+        "model/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "model/classifier.py": "cfbc52871e77b2c6be7e0f4b8c0376c45158b37a596490eedc274ef9779303f2",
+        "model/layers.py": "3391bf24b04c37a9e229d72ed00d5160ebd6ed32fd81f332928e861d781cac01",
+        "model/model.py": "85fc5df6c76b401c5f41b96992fa72183547c1e6ab7aa568d2716f8c3ba99db9",
+        "model/unet.py": "9aa0246af4e9370a94748577f53de1417c6ff41c9b59f95670aa7c2082c02902",
+        "model/unet_utils.py": "d305e0b0a61b482b3d247103c5c121965e50d960104c8e4f555b0eb1df474f13",
+        "score_new/both.py": "4b031e903fd2a530e87c53542999a0585a43e044c90bd5c9a8f8c41d190cfce3",
+        "score_new/fid.py": "802b69ca903026574a99b30fdf906d3721453cc5bb247197a93f43129cdee933",
+        "score_new/improved_prd.py": "596dd07dac55ec1b3882c6de7fcb389962a98d07ceec45e80be7fa5a61c6f22c",
+        "score_new/inception.py": "5767e46e70eccfa71835062c2afa30b044f52eb54f4bfee61d2fda5e3e783ec4",
+        "score_new/prd_score.py": "0aa1af7ffb82411c13d07dc1f945347ddc0ac8589eac403d51763daf61ad72b8",
+        "utils/category.py": "39779c632a5e42bc8b8b696020a62185604fc1f4443fe410c0a51a16340ac809",
+        "utils/fid_feats.py": "aebe473cf65676d5e3c27f4ea80a4e283555e98e6eae3da6bbbf2453920350eb",
+        "utils/fid_score.py": "566aa3a8549f67cde59b3280bd18a69e59259646b20013f1035f2c324459d8bd",
+        "utils/inception.py": "6ebb22743f4746c81a7668571393f02a1d31a3befc48e0f035e213caab04dc79"
+      }
+    },
     "cm": {
       "commit": "04262d7efc4130fda551fa1a1a22d8d5af636899",
       "directory": "ImbDiff-CM",

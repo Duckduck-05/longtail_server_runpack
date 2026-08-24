@@ -18,7 +18,7 @@ source "$VENV/bin/activate"
 python -m pip install --upgrade "pip<26" "setuptools<82" wheel
 python -m pip install -e .
 
-required=(CBDM-pytorch ImbDiff-CM OC_LT coral-lt-diffusion)
+required=(CBDM-pytorch ImbDiff-CM OC_LT coral-lt-diffusion CCUA-DDPM)
 for directory in "${required[@]}"; do
   if [[ ! -d "$REPOS_ROOT/$directory" ]]; then
     echo "[bootstrap] missing vendored third_party/$directory. The delivered runpack is incomplete." >&2
@@ -42,6 +42,7 @@ python patches/apply_uniform_eval_labels.py "$REPOS_ROOT"
 python patches/apply_cbdm_metric_paths.py "$REPOS_ROOT/CBDM-pytorch"
 python patches/apply_cm_imagenet_lt.py "$REPOS_ROOT/ImbDiff-CM"
 python patches/apply_cm_array_export.py "$REPOS_ROOT/ImbDiff-CM"
+python patches/apply_ccua_sample_export.py "$REPOS_ROOT/CCUA-DDPM"
 mkdir -p "$REPOS_ROOT/ImbDiff-CM/configs/imagenet_lt"
 cp patches/cm_imagenet_lt.yaml "$REPOS_ROOT/ImbDiff-CM/configs/imagenet_lt/cm.yaml"
 

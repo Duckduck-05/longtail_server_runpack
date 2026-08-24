@@ -393,7 +393,8 @@ def _check_unified_cifar_contract(campaign: LoadedCampaign, repo_root: Path) -> 
     expected_cells = set(contract.get("cells", ()))
     expected_methods = set(contract.get("methods", ()))
     expected_seeds = sorted(map(int, contract.get("seeds", ())))
-    expected_adapters = {"ddpm": "coral", "cbdm": "coral", "coral": "coral", "t2h": "oc", "cm": "cm"}
+    expected_adapters = {"ddpm": "coral", "cbdm": "coral", "coral": "coral", "t2h": "oc",
+                         "cm": "cm", "ccua": "ccua"}
 
     methods = {task.method for task in campaign.tasks}
     cells = {str(task.dataset.get("name")) for task in campaign.tasks}
@@ -402,7 +403,8 @@ def _check_unified_cifar_contract(campaign: LoadedCampaign, repo_root: Path) -> 
     elif "oc" in methods:
         checks.append(Check("ERROR", "unified-methods", "OC is an alias of T2H and must not appear as a second row"))
     else:
-        checks.append(Check("PASS", "unified-methods", "DDPM/CBDM/T2H/CM/CORAL exactly once per cell"))
+        checks.append(Check("PASS", "unified-methods",
+                            f"{'/'.join(m.upper() for m in sorted(expected_methods))} exactly once per cell"))
     if cells != expected_cells:
         checks.append(Check("ERROR", "unified-cells", f"expected {sorted(expected_cells)}, found {sorted(cells)}"))
 
@@ -453,7 +455,7 @@ def _check_unified_cifar_contract(campaign: LoadedCampaign, repo_root: Path) -> 
         if not task.eval.get("per_class_metrics_file"): settings_errors.append(f"{prefix}: per-class FID")
         if task.eval.get("longtail_groups") != "cm_three_way": settings_errors.append(f"{prefix}: Many/Medium/Few grouping")
         if task.adapter == "cm" and not task.train.get("inclusive_final_step", False): settings_errors.append(f"{prefix}: CM inclusive endpoint")
-        if task.adapter in {"cm", "oc"} and int(task.eval.get("ddim_skip_step", -1)) != 1: settings_errors.append(f"{prefix}: ancestral step")
+        if task.adapter in {"cm", "oc", "ccua"} and int(task.eval.get("ddim_skip_step", -1)) != 1: settings_errors.append(f"{prefix}: ancestral step")
     if settings_errors:
         checks.append(Check("ERROR", "unified-controls", "; ".join(settings_errors)))
     else:
@@ -468,6 +470,14 @@ def _check_unified_cifar_contract(campaign: LoadedCampaign, repo_root: Path) -> 
         oc = repo_root / campaign.raw["repositories"]["oc"].get("directory", "OC_LT")
         if not (oc / ".ltx_oc_sample_export_v1").exists():
             checks.append(Check("ERROR", "unified-t2h-export", "T2H generated-array export patch missing"))
+    if any(task.adapter == "ccua" for task in campaign.tasks):
+        ccua = repo_root / campaign.raw.get("repositories", {}).get("ccua", {}).get("directory", "CCUA-DDPM")
+        if not (ccua / ".ltx_ccua_sample_export_v1").exists():
+            checks.append(Check("ERROR", "unified-ccua-export",
+                                "CCUA sample-output/uniform-label patch missing; run bootstrap"))
+        else:
+            checks.append(Check("PASS", "unified-ccua-export",
+                                "CCUA exports arrays to the shared evaluator with class-uniform labels"))
     return checks
 
 

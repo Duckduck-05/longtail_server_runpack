@@ -1,6 +1,6 @@
 # Source papers
 
-The five methods in the unified CIFAR-LT table, one paper each. Fetch or
+The six methods in the unified CIFAR-LT table, one paper each. Fetch or
 refresh them with:
 
 ```bash
@@ -17,6 +17,7 @@ third-party copyrighted works. The script re-fetches them on demand.
 | `t2h` | Long-tailed Diffusion Models with Oriented Calibration | ICLR 2024 | [OpenReview NW2s5XXwXU](https://openreview.net/forum?id=NW2s5XXwXU) | `t2h-iclr2024-zhang.pdf` |
 | `cm` | Improving Diffusion Models for Class-imbalanced Training Data via Capacity Manipulation | ICLR 2026 (Oral) | [OpenReview wSGle6ag5I](https://openreview.net/forum?id=wSGle6ag5I) | `cm-iclr2026-hong.pdf` |
 | `coral` | CORAL: Disentangling Latent Representations in Long-Tailed Diffusion | NeurIPS 2025 | [arXiv:2506.15933](https://arxiv.org/abs/2506.15933) | `coral-neurips2025-rodriguez.pdf` |
+| `ccua` | Contrastive Conditional–Unconditional Alignment for Long-tailed Diffusion Model | arXiv preprint (v3, Jun 2026) | [arXiv:2507.09052](https://arxiv.org/abs/2507.09052) | `ccua-arxiv2507.09052-chen.pdf` |
 
 ## Notes on provenance
 
@@ -42,6 +43,17 @@ third-party copyrighted works. The script re-fetches them on demand.
 - **CORAL** is also vendored inside the source tree at
   `third_party/coral-lt-diffusion/CORAL-NeurIPS2025-Rodriguezetal.pdf`; the copy
   here is the arXiv version.
+- **`ccua` is the U-Net half of its repository.** Upstream ships `CCUA-DDPM`
+  (U-Net) and `CCUA-SiT` (Diffusion Transformer); only the former shares this
+  table's backbone, so only `CCUA-DDPM/DDPM` is vendored. Two consequences for
+  reading the paper next to this table: the paper's tuned loss weights
+  α = γ = 0.05 belong to the SiT/ImageNet-LT pipeline, while the U-Net pipeline's
+  own script uses 1.0/1.0 (what this table runs); and the paper's batch-resample
+  strategy is applied to ImageNet-LT/TinyImageNet-LT but explicitly **not** to
+  CIFAR-LT, so it is off here too. CCUA's own FLD/CLIP/DINOv2 metric stack is not
+  vendored — every row is scored by this repo's shared evaluator instead.
+  Its Table 8 reports CIFAR-100-LT with DDPM 1000 steps, the same sampler family
+  as this contract, so it is the paper number most comparable to the `ccua` row.
 - **IGD-ML** (`third_party/IGD-ML`, "Principled Long-Tailed Generative Modelling
   via Diffusion Models") is vendored but deliberately **not** part of the table,
   so its paper is not fetched here.
@@ -82,5 +94,12 @@ third-party copyrighted works. The script re-fetches them on demand.
   author={Rodriguez, Esther and Welfert, Monica and McDowell, Samuel and Stromberg, Nathan and Camarena, Julian Antolin and Sankar, Lalitha},
   booktitle={Advances in Neural Information Processing Systems},
   year={2025}
+}
+
+@article{chen2026contrastive,
+  title={Contrastive Conditional--Unconditional Alignment for Long-tailed Diffusion Model},
+  author={Chen, Fang and Villa, Alex and Liang, Gongbo and Fuxin, Li and Lu, Xiaoyi and Tang, Meng},
+  journal={arXiv preprint arXiv:2507.09052},
+  year={2026}
 }
 ```

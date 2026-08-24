@@ -22,6 +22,11 @@ COMPONENTS = {
     "cm": "ImbDiff-CM",
     "oc": "OC_LT",
     "coral": "coral-lt-diffusion",
+    # CCUA publishes two pipelines in one repository; only the U-Net one is
+    # vendored, from the CCUA-DDPM/DDPM subtree, without its FLD/CLIP/DINOv2
+    # metric stack. Its manifest entry records both facts, so refresh it with
+    # --subtree rather than assuming source_root/CCUA-DDPM is the repo root.
+    "ccua": "CCUA-DDPM",
 }
 
 
