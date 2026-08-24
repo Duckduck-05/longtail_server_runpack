@@ -1,15 +1,20 @@
 # Runbook — Unified CIFAR-LT table
 
+**Scope hiện tại: chỉ CIFAR-100-LT** (15 task — CIFAR-10-LT sẽ chạy sau).
 Trên server CUDA, ở root của runpack độc lập này chạy:
 
 ```bash
-bash scripts/run_server.sh
+bash scripts/run_server_c100.sh
 ```
 
 Không cần clone `Longtail` hay thư mục nào khác. Lệnh tự tạo/cập nhật conda
 environment từ `environment.yml`, bootstrap các third-party đã vendored, đọc
-`.env.local`, tự tải CIFAR-10/CIFAR-100 bằng `torchvision`, tạo metric assets,
-rồi chạy/resume campaign 45 task.
+`.env.local`, tự tải CIFAR-100 bằng `torchvision`, tạo metric assets, rồi
+chạy/resume campaign 15 task (`configs/unified_cifar_c100.yaml`).
+
+Khi nào cần chạy đủ cả CIFAR-10-LT + CIFAR-100-LT (45 task, protocol khoá
+cứng gốc), dùng `bash scripts/run_server.sh` thay thế — cùng máy, cùng
+environment, không cần setup gì thêm.
 
 ## Chọn mức song song (GPU packing)
 
@@ -21,8 +26,8 @@ task đầu tiên hoàn thành. Không cần biết trước cấu hình máy th
 Ép tay khi cần — ví dụ máy đang cotenant hoặc muốn giới hạn GPU cụ thể:
 
 ```bash
-bash scripts/run_server.sh --per-gpu 3 --gpus 0,1,2,3
-bash scripts/run_server.sh --jobs 8        # trần tổng số task chạy đồng thời
+bash scripts/run_server_c100.sh --per-gpu 3 --gpus 0,1,2,3
+bash scripts/run_server_c100.sh --jobs 8        # trần tổng số task chạy đồng thời
 ```
 
 Hoặc đặt trong `.env.local`: `LTX_TASKS_PER_GPU`, `LTX_GPU_IDS`,
@@ -30,6 +35,11 @@ Hoặc đặt trong `.env.local`: `LTX_TASKS_PER_GPU`, `LTX_GPU_IDS`,
 dataloader để không quá tải CPU của host.
 
 ## Campaign được khóa
+
+Bản đầy đủ (`configs/unified_cifar.yaml`, `scripts/run_server.sh`) khoá cứng
+matrix dưới đây; bản đang chạy (`configs/unified_cifar_c100.yaml`,
+`scripts/run_server_c100.sh`) chỉ dùng đúng dòng CIFAR-100-LT IF100 — cùng
+methods/seeds/budget/contract, chỉ khác `fairness_contract.cells` còn một cell.
 
 - Cells: CIFAR-10-LT IF100, CIFAR-10-LT IF1000, CIFAR-100-LT IF100.
 - Methods: DDPM, CBDM, T2H, CM, CORAL.
@@ -52,18 +62,19 @@ schedule hoặc metric contract bị lệch.
 
 ```bash
 source .venv/bin/activate
-python -m ltx.cli status --config configs/unified_cifar.yaml --watch 30
+python -m ltx.cli status --config configs/unified_cifar_c100.yaml --watch 30
 ```
 
-Kết quả paper-facing chỉ đọc từ:
+Kết quả paper-facing chỉ đọc từ (campaign name `unified_cifar_c100_v1` cho
+bản CIFAR-100-LT, `unified_cifar_v1` cho bản đầy đủ):
 
 ```text
-runs/unified_cifar_v1/report/table.md
-runs/unified_cifar_v1/report/per_seed.csv
-runs/unified_cifar_v1/report/summary.json
-runs/unified_cifar_v1/report/results.log       # bảng + fingerprint + trạng thái từng task + link W&B, gộp một file
-runs/unified_cifar_v1/report/campaign_run.log  # snapshot stdout toàn campaign (bootstrap, GPU packing, launch, lỗi)
-runs/unified_cifar_v1/latest.log               # stdout live của lần chạy gần nhất (symlink)
+runs/unified_cifar_c100_v1/report/table.md
+runs/unified_cifar_c100_v1/report/per_seed.csv
+runs/unified_cifar_c100_v1/report/summary.json
+runs/unified_cifar_c100_v1/report/results.log       # bảng + fingerprint + trạng thái từng task + link W&B, gộp một file
+runs/unified_cifar_c100_v1/report/campaign_run.log  # snapshot stdout toàn campaign (bootstrap, GPU packing, launch, lỗi)
+runs/unified_cifar_c100_v1/latest.log               # stdout live của lần chạy gần nhất (symlink)
 ```
 
 W&B có năm run groups theo cell/method, loss và system telemetry theo task,
