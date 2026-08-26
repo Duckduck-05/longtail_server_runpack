@@ -125,6 +125,18 @@ strip tiền tố đó ở đường eval (giống cách upstream đã làm tron
 Preflight fail-closed nếu thiếu marker
 `third_party/OC_LT/.ltx_oc_compiled_ckpt_patch_v1`.
 
+Muốn kiểm chứng trên GPU trong ~2 phút (train 20 bước rồi chạy đúng nhánh eval
+ancestral-DDPM với stride thô):
+
+```bash
+source .venv/bin/activate
+python -m ltx.cli run --config configs/smoke_t2h.yaml --skip-preflight
+```
+
+Nó ghi `t2h_samples.npy`, file nhãn class-uniform và marker `SUCCESS` trong
+`runs/smoke_t2h_v1/`, và lên W&B với tag `smoke`. FID/IS ở đó là `nan` theo
+thiết kế: 64 ảnh chỉ để kiểm tra đường ống, không phải để đo.
+
 **Log tiến trình.** tqdm vẽ lại bằng `\r`, khi output bị pipe thì mỗi lần vẽ
 lại thành một record — phase train 31 giờ từng ghi ~300k record vào
 `stdout.log` (phase eval còn nhiều hơn, mỗi batch một thanh 1.000 bước) và tất

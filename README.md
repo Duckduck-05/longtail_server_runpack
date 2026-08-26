@@ -138,6 +138,18 @@ fails closed when the marker `third_party/OC_LT/.ltx_oc_compiled_ckpt_patch_v1`
 is missing, rather than letting a campaign burn 300k updates into an eval that
 cannot load its own checkpoint.
 
+`configs/smoke_t2h.yaml` proves that path on a real GPU in about two minutes —
+a 20-step train, then the production ancestral-DDPM eval on a coarse stride:
+
+```bash
+source .venv/bin/activate
+python -m ltx.cli run --config configs/smoke_t2h.yaml --skip-preflight
+```
+
+It writes `t2h_samples.npy`, its class-uniform labels, and a `SUCCESS` marker
+under `runs/smoke_t2h_v1/`, and appears in W&B tagged `smoke`. FID/IS print as
+`nan` there by design: 64 images is a plumbing check, not a measurement.
+
 **Progress-bar log volume.** tqdm redraws with a carriage return, so with the
 output piped every redraw used to become its own record: a 31-hour training
 phase wrote ~300k of them into `stdout.log` (and the eval phase far more,
