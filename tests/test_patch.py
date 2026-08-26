@@ -63,3 +63,25 @@ def test_oc_seed_resume_patch(tmp_path):
     subprocess.run([sys.executable,str(root/'patches/apply_oc_seed_patch.py'),str(repo)],check=True)
     text=(repo/'main.py').read_text()
     assert "DEFINE_integer('seed'" in text and 'trange(FLAGS.ckpt_step, FLAGS.total_steps' in text
+
+
+def test_oc_compiled_ckpt_patch(tmp_path):
+    repo=tmp_path/'oc'; repo.mkdir()
+    src=("import torch\n"
+         "def eval():\n"
+         "    ckpt = torch.load('x')\n"
+         "    model.load_state_dict(ckpt['net_model'])\n"
+         "    model.load_state_dict(ckpt['ema_model'])\n")
+    (repo/'ddpm_gen.py').write_text(src)
+    root=Path(__file__).resolve().parents[1]
+    script=str(root/'patches/apply_oc_compiled_ckpt.py')
+    subprocess.run([sys.executable,script,str(repo)],check=True)
+    text=(repo/'ddpm_gen.py').read_text()
+    assert "_strip_compile_prefix(ckpt['net_model'])" in text
+    assert "_strip_compile_prefix(ckpt['ema_model'])" in text
+    subprocess.run([sys.executable,script,str(repo)],check=True)
+    assert (repo/'ddpm_gen.py').read_text()==text
+    ns={}
+    exec(text.split('def eval():')[0], ns)
+    stripped=ns['_strip_compile_prefix']({'_orig_mod.head.weight':1,'head.bias':2})
+    assert stripped=={'head.weight':1,'head.bias':2}

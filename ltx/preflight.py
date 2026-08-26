@@ -374,6 +374,8 @@ def _check_coral2025_metric_protocol(campaign: LoadedCampaign, repo_root: Path) 
             checks.append(Check("PASS", "paper-t2h-metrics", "T2H exports generated arrays/labels to the shared five-metric evaluator"))
         else:
             checks.append(Check("ERROR", "paper-t2h-metrics", "T2H sample-export patch marker missing"))
+        if not (oc / ".ltx_oc_compiled_ckpt_patch_v1").exists():
+            checks.append(Check("ERROR", "paper-t2h-eval-ckpt", "T2H evaluator cannot load a torch.compile'd checkpoint; run bootstrap"))
     return checks
 
 
@@ -470,6 +472,9 @@ def _check_unified_cifar_contract(campaign: LoadedCampaign, repo_root: Path) -> 
         oc = repo_root / campaign.raw["repositories"]["oc"].get("directory", "OC_LT")
         if not (oc / ".ltx_oc_sample_export_v1").exists():
             checks.append(Check("ERROR", "unified-t2h-export", "T2H generated-array export patch missing"))
+        if not (oc / ".ltx_oc_compiled_ckpt_patch_v1").exists():
+            checks.append(Check("ERROR", "unified-t2h-eval-ckpt",
+                                "T2H evaluator cannot load a torch.compile'd checkpoint; run bootstrap"))
     if any(task.adapter == "ccua" for task in campaign.tasks):
         ccua = repo_root / campaign.raw.get("repositories", {}).get("ccua", {}).get("directory", "CCUA-DDPM")
         if not (ccua / ".ltx_ccua_sample_export_v1").exists():

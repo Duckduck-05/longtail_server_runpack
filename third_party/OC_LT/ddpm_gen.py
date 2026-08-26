@@ -155,6 +155,12 @@ def evaluate(sampler, model,save=True,use_eval=True,save_intermediate=False):
     return (IS, IS_std), FID, images
 
 
+def _strip_compile_prefix(state_dict):
+    """torch.compile prefixes every key with ``_orig_mod.``; the evaluator builds
+    a plain UNet, so drop the prefix before loading a training checkpoint."""
+    return {str(key).replace("_orig_mod.", ""): value for key, value in state_dict.items()}
+
+
 def eval():
     # model setup
     model = UNet(
@@ -174,7 +180,7 @@ def eval():
     else:
         ckpt = torch.load(os.path.join(FLAGS.logdir, 'ckpt.pt'))
 
-    model.load_state_dict(ckpt['net_model'])
+    model.load_state_dict(_strip_compile_prefix(ckpt['net_model']))
 
     # (IS, IS_std), FID, samples = evaluate(sampler, model)
     # print("Model     : IS:%6.3f(%.3f), FID:%7.3f" % (IS, IS_std, FID))
@@ -183,7 +189,7 @@ def eval():
     #    os.path.join(FLAGS.logdir, 'samples.png'),
     #    nrow=16)
 
-    model.load_state_dict(ckpt['ema_model'])
+    model.load_state_dict(_strip_compile_prefix(ckpt['ema_model']))
     (IS, IS_std), FID, samples = evaluate(sampler, None)
     print("Model(EMA): IS:%6.3f(%.3f), FID:%7.3f" % (IS, IS_std, FID))
     save_image(
