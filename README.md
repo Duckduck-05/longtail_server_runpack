@@ -97,6 +97,59 @@ readable there without shell access. Both the visibility change and the report
 are best-effort: if either call fails, the run still completes and prints the
 one-time manual UI step instead.
 
+## Operating a run in progress
+
+Rerunning `bash scripts/run_server_c100.sh` is always the right command: it
+re-bootstraps (which is idempotent), recovers tasks whose worker died, and
+resumes each one from its newest checkpoint. Three things are worth knowing
+before you stop or restart a campaign.
+
+**Stopping.** `python -m ltx.cli stop --config configs/unified_cifar_c100.yaml`
+SIGTERMs every running worker's process group. The next `run_server_c100.sh`
+picks those tasks back up automatically (they are marked `retry`, not
+`failed`) and resumes training from the last checkpoint. Checkpoints are
+written every 50k updates and only the newest is kept, so a stop costs up to
+50k updates (~5 h at 2.6 it/s) of whatever was training at the time. If you
+expect to stop and restart repeatedly, lower `save_step` in
+`configs/unified_cifar_c100.yaml` first — only one checkpoint is retained
+either way, so it costs no extra disk.
+
+**Failed tasks are not resumed.** A task that ended in `failed` stays failed;
+`run` only picks up `pending`/`retry`. Requeue explicitly, then run again:
+
+```bash
+python -m ltx.cli retry-failed --config configs/unified_cifar_c100.yaml
+bash scripts/run_server_c100.sh
+```
+
+A requeued task skips any phase whose outputs already exist, so a T2H task
+that trained to `ckpt_300000.pt` and died in eval re-runs eval and metrics
+only — it does not retrain.
+
+**T2H/OC eval and `torch.compile`.** `OC_LT/main.py` wraps the U-Net in
+`torch.compile`, so every key in the saved `net_model` carries an
+`_orig_mod.` prefix, while `ddpm_gen.py` builds a plain `UNet`. Loading one
+into the other raises `RuntimeError: Error(s) in loading state_dict for UNet`
+and kills the eval phase *after* training has already been paid for.
+`patches/apply_oc_compiled_ckpt.py` strips the prefix on the eval path, the
+same way upstream already strips it in `ema()`; `scripts/bootstrap.sh` applies
+it, so simply rerunning the launch script installs the fix. Preflight now
+fails closed when the marker `third_party/OC_LT/.ltx_oc_compiled_ckpt_patch_v1`
+is missing, rather than letting a campaign burn 300k updates into an eval that
+cannot load its own checkpoint.
+
+**Progress-bar log volume.** tqdm redraws with a carriage return, so with the
+output piped every redraw used to become its own record: a 31-hour training
+phase wrote ~300k of them into `stdout.log` (and the eval phase far more,
+one 1,000-step bar per sampled batch), all of it also uploaded as a W&B
+artifact. The worker now keeps one redraw per `progress_log_every_seconds`
+(default 30) and sets `TQDM_MININTERVAL` (default 10) inside the child so the
+redraws are thinned at the source too; both knobs live under `runtime:` in
+`configs/server.yaml`, and `progress_log_every_seconds: 0` restores the old
+behaviour. Lines that end in a real newline — ordinary logs, tracebacks,
+metric prints, and the final state of each bar — are never dropped, and each
+phase reports how many redraws it suppressed.
+
 This is a new controlled benchmark, so it must be described as such in a
 paper—not as a bit-for-bit reproduction of any individual paper table. Full
 method and protocol audit: [UNIFIED_CIFAR_PROTOCOL.md](UNIFIED_CIFAR_PROTOCOL.md).

@@ -91,6 +91,50 @@ upload thành artifact `evaluation-report` của run report. Nghĩa là người
 hộ chỉ cần đưa lại **một link W&B** — bảng, trạng thái từng task, và toàn bộ
 stdout của campaign đều đọc được trên đó, không cần quyền vào máy.
 
+## Dừng, bật lại, và task đã fail
+
+Chạy lại `bash scripts/run_server_c100.sh` luôn là lệnh đúng: nó bootstrap lại
+(idempotent), nhận lại các task có worker đã chết, và resume từ checkpoint mới
+nhất của từng task.
+
+**Dừng.** `python -m ltx.cli stop --config configs/unified_cifar_c100.yaml` gửi
+SIGTERM cho process group của mọi worker đang chạy. Lần chạy sau tự nhặt lại
+(trạng thái `retry`, không phải `failed`). Checkpoint ghi mỗi 50k bước và chỉ
+giữ cái mới nhất, nên mỗi lần dừng mất tối đa 50k bước (~5 giờ ở 2.6 it/s) của
+task đang train. Nếu định dừng/bật nhiều lần, hạ `save_step` trong
+`configs/unified_cifar_c100.yaml` trước — chỉ giữ một checkpoint nên không tốn
+thêm đĩa.
+
+**Task `failed` không tự resume.** `run` chỉ nhặt `pending`/`retry`, phải
+requeue tay:
+
+```bash
+python -m ltx.cli retry-failed --config configs/unified_cifar_c100.yaml
+bash scripts/run_server_c100.sh
+```
+
+Task được requeue sẽ skip mọi phase đã có output, nên task T2H đã train xong
+`ckpt_300000.pt` mà chết ở eval chỉ chạy lại eval + metrics, **không train lại**.
+
+**Lỗi eval của T2H/OC với `torch.compile`.** `OC_LT/main.py` bọc U-Net bằng
+`torch.compile` nên mọi key trong `net_model` có tiền tố `_orig_mod.`, trong khi
+`ddpm_gen.py` dựng `UNet` thuần → `RuntimeError: Error(s) in loading state_dict
+for UNet`, chết ở phase eval sau khi đã train xong. `patches/apply_oc_compiled_ckpt.py`
+strip tiền tố đó ở đường eval (giống cách upstream đã làm trong `ema()`);
+`scripts/bootstrap.sh` tự apply, nên chỉ cần chạy lại script launch là có fix.
+Preflight fail-closed nếu thiếu marker
+`third_party/OC_LT/.ltx_oc_compiled_ckpt_patch_v1`.
+
+**Log tiến trình.** tqdm vẽ lại bằng `\r`, khi output bị pipe thì mỗi lần vẽ
+lại thành một record — phase train 31 giờ từng ghi ~300k record vào
+`stdout.log` (phase eval còn nhiều hơn, mỗi batch một thanh 1.000 bước) và tất
+cả đều được upload làm W&B artifact. Worker giờ chỉ giữ một redraw mỗi
+`progress_log_every_seconds` (mặc định 30) và set `TQDM_MININTERVAL` (mặc định
+10) cho tiến trình con; hai knob nằm trong `runtime:` của `configs/server.yaml`,
+đặt `progress_log_every_seconds: 0` để quay lại hành vi cũ. Dòng kết thúc bằng
+newline thật (log thường, traceback, dòng in metric, trạng thái cuối của mỗi
+thanh) không bao giờ bị bỏ; cuối mỗi phase in ra số redraw đã lược.
+
 Không gọi kết quả này là “paper reproduction”: đây là protocol chung mới với
 source-native implementations. Chi tiết khoa học ở
 [UNIFIED_CIFAR_PROTOCOL.md](UNIFIED_CIFAR_PROTOCOL.md).

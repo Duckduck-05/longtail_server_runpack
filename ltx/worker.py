@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -211,7 +212,14 @@ def init_wandb(task: Task, run_dir: Path):
         return None
 
 
-def run_phase(phase, env: Dict[str, str], log_path: Path, state: StateDB, task_id: str, wb_run) -> int:
+# tqdm redraws with a carriage return, so a 300k-step bar is not "one progress
+# line" but 300k of them.  Split the child's output on both terminators so the
+# redraws can be thinned out before they reach stdout.log and the W&B artifact.
+_OUTPUT_SEGMENT = re.compile(rb"[^\r\n]*[\r\n]")
+
+
+def run_phase(phase, env: Dict[str, str], log_path: Path, state: StateDB, task_id: str, wb_run,
+              progress_seconds: float = 30.0) -> int:
     if phase.skip_if_exists and all(path.exists() for path in phase.skip_if_exists):
         print(f"[ltx] skip phase={phase.name}; outputs exist", flush=True)
         return 0
@@ -231,23 +239,70 @@ def run_phase(phase, env: Dict[str, str], log_path: Path, state: StateDB, task_i
         log.flush()
         proc = subprocess.Popen(
             phase.command, cwd=str(phase.cwd), env=phase_env,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-            bufsize=1, universal_newlines=True, start_new_session=False,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            start_new_session=False,
         )
+        suppressed = 0
+        last_progress = 0.0
+        last_heartbeat = 0.0
+
+        def emit(segment: bytes) -> None:
+            """Write one output segment, keeping progress redraws to a trickle.
+
+            A segment ending in ``\r`` is a progress redraw: it is dropped
+            unless `progress_seconds` have passed, and the survivor is stored
+            as a real line so stdout.log stays greppable and bounded.  Anything
+            ending in ``\n`` is genuine output and always survives.
+            """
+            nonlocal suppressed, last_progress
+            if segment.endswith(b"\r"):
+                now = time.monotonic()
+                if progress_seconds > 0 and now - last_progress < progress_seconds:
+                    suppressed += 1
+                    return
+                last_progress = now
+                segment = segment[:-1] + b"\n"
+            text = segment.decode("utf-8", errors="replace")
+            # Thinning the output makes the default block buffering visible as
+            # a stalled log, so flush what little is left through immediately.
+            sys.stdout.write(text)
+            sys.stdout.flush()
+            log.write(text)
+            log.flush()
+
         try:
             assert proc.stdout is not None
-            for line in proc.stdout:
-                sys.stdout.write(line)
-                log.write(line)
+            fd = proc.stdout.fileno()
+            pending = b""
+            while True:
+                chunk = os.read(fd, 65536)
+                if not chunk:
+                    break
+                pending += chunk
+                consumed = 0
+                for match in _OUTPUT_SEGMENT.finditer(pending):
+                    emit(match.group(0))
+                    consumed = match.end()
+                pending = pending[consumed:]
                 # No loss scraping from stdout here: every method writes the
                 # same scalars to TensorBoard, which the Monitor mirrors with
                 # their true training step. Scraping tqdm's postfix produced a
                 # second, step-less copy of the same curve.
-                if int(time.time()) % 15 == 0:
+                now = time.monotonic()
+                if now - last_heartbeat >= 15:
+                    last_heartbeat = now
                     state.heartbeat(task_id, f"phase={phase.name} pid={proc.pid}")
+            if pending:
+                emit(pending + b"\n")
         except KeyboardInterrupt:
             proc.terminate()
             raise
+        finally:
+            if suppressed:
+                note = f"[ltx] suppressed {suppressed} progress redraws (one kept per {progress_seconds:g}s)\n"
+                sys.stdout.write(note)
+                log.write(note)
+            log.flush()
         return proc.wait()
 
 
@@ -344,9 +399,14 @@ def main() -> None:
         # inside the subprocess is a no-op for it; the real loss curve already
         # reaches this task's W&B run via the Monitor's tensorboard mirror below.
         env = {"CUDA_VISIBLE_DEVICES": str(args.gpu), "LTX_TASK_ID": task.id, "LTX_RUN_DIR": str(run_dir),
-               "WANDB_MODE": "disabled"}
+               "WANDB_MODE": "disabled",
+               # Thin the redraws out at the source as well, so a 31-hour run
+               # does not push a million bar updates through the pipe just to
+               # have them dropped here.
+               "TQDM_MININTERVAL": str(task.runtime.get("tqdm_min_interval_seconds", 10))}
+        progress_seconds = float(task.runtime.get("progress_log_every_seconds", 30))
         for phase in phases:
-            code = run_phase(phase, env, stdout_log, state, task.id, wb_run)
+            code = run_phase(phase, env, stdout_log, state, task.id, wb_run, progress_seconds)
             if code != 0:
                 exit_code = code
                 raise RuntimeError(f"phase {phase.name} exited with {code}")

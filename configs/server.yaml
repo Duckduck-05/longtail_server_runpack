@@ -36,6 +36,13 @@ runtime:
   wandb_entity: ${WANDB_ENTITY:-}
   wandb_mode: ${WANDB_MODE:-online}
   log_system_every_seconds: 30
+  # tqdm redraws its bar several times a second, and with the output
+  # piped every redraw becomes its own record: a 31-hour training phase
+  # wrote ~300k of them into stdout.log and the W&B artifact. Keep one
+  # redraw per this many seconds (0 keeps them all); tqdm_min_interval
+  # applies the same thinning inside the child process.
+  progress_log_every_seconds: 30
+  tqdm_min_interval_seconds: 10
   log_tensorboard_every_seconds: 60
   upload_sample_grids: true
   upload_final_checkpoint: false
