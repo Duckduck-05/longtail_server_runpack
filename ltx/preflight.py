@@ -395,8 +395,12 @@ def _check_unified_cifar_contract(campaign: LoadedCampaign, repo_root: Path) -> 
     expected_cells = set(contract.get("cells", ()))
     expected_methods = set(contract.get("methods", ()))
     expected_seeds = sorted(map(int, contract.get("seeds", ())))
+    # The IP-SVT arms deliberately share the ddpm baseline's adapter: they are
+    # the same trainer with auxiliary flags, which is what makes the comparison
+    # a comparison of objectives rather than of codebases.
     expected_adapters = {"ddpm": "coral", "cbdm": "coral", "coral": "coral", "t2h": "oc",
-                         "cm": "cm", "ccua": "ccua"}
+                         "cm": "cm", "ccua": "ccua",
+                         "ipsvt": "coral", "ipsvt_twin": "coral", "ipsvt_clean": "coral"}
 
     methods = {task.method for task in campaign.tasks}
     cells = {str(task.dataset.get("name")) for task in campaign.tasks}
@@ -457,7 +461,23 @@ def _check_unified_cifar_contract(campaign: LoadedCampaign, repo_root: Path) -> 
         if not task.eval.get("per_class_metrics_file"): settings_errors.append(f"{prefix}: per-class FID")
         if task.eval.get("longtail_groups") != "cm_three_way": settings_errors.append(f"{prefix}: Many/Medium/Few grouping")
         if task.adapter == "cm" and not task.train.get("inclusive_final_step", False): settings_errors.append(f"{prefix}: CM inclusive endpoint")
-        if task.adapter in {"cm", "oc", "ccua"} and int(task.eval.get("ddim_skip_step", -1)) != 1: settings_errors.append(f"{prefix}: ancestral step")
+        # The contract fixes ONE sampler for every method; which one is a
+        # protocol choice, and it is now DDIM-100. cm/oc/ccua express that as
+        # skip = T/steps, the coral-family repos as an explicit step count, so
+        # both spellings are checked against the same contract value.
+        family = str(contract.get("sampler_family", ""))
+        if family.startswith("ddim_"):
+            want_steps = int(family.split("_", 1)[1])
+            if task.adapter in {"cm", "oc", "ccua"}:
+                skip = int(task.eval.get("ddim_skip_step", -1))
+                got = diffusion_steps // skip if skip > 0 else -1
+                if task.eval.get("sample_method") != "ddim" or got != want_steps:
+                    settings_errors.append(f"{prefix}: sampler steps={got} != {want_steps}")
+            else:
+                if int(task.eval.get("ddim_steps", -1)) != want_steps:
+                    settings_errors.append(f"{prefix}: ddim_steps={task.eval.get('ddim_steps')} != {want_steps}")
+        elif task.adapter in {"cm", "oc", "ccua"} and int(task.eval.get("ddim_skip_step", -1)) != 1:
+            settings_errors.append(f"{prefix}: ancestral step")
     if settings_errors:
         checks.append(Check("ERROR", "unified-controls", "; ".join(settings_errors)))
     else:

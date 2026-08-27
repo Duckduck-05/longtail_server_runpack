@@ -13,9 +13,15 @@ bash scripts/run_server_c100.sh
 
 It creates the pinned environment, loads the packaged `.env.local` W&B
 settings, downloads CIFAR-100 through `torchvision`, prepares the shared
-metric references, resumes safely when rerun, and launches all 18 CIFAR-100-LT
-tasks (DDPM, CBDM, T2H, CM, CORAL, CCUA x seeds 0,1,2;
-`configs/unified_cifar_c100.yaml`).
+metric references, resumes safely when rerun, and launches all 27 CIFAR-100-LT
+tasks (DDPM, CBDM, T2H, CM, CORAL, CCUA, IP-SVT and its two ablation arms
+x seeds 0,1,2; `configs/unified_cifar_c100.yaml`).
+
+**If you already have trained checkpoints, do not retrain.** Each task skips
+its training phase when the final checkpoint is already in place, so dropping
+checkpoints into the run directories turns the same command into an
+evaluation-only pass. See
+[Reusing checkpoints trained elsewhere](#reusing-checkpoints-trained-elsewhere).
 
 GPU packing is automatic: the scheduler reads each GPU's free VRAM and packs
 multiple tasks onto one GPU when there's room (starting from a 12 GB/task
@@ -37,25 +43,92 @@ same machine, same environment, no extra setup.
 
 ## What runs
 
-**Current scope — `scripts/run_server_c100.sh`:** 18 tasks, one cell.
+**Current scope — `scripts/run_server_c100.sh`:** 27 tasks, one cell.
 
 | Data | Methods | Shared controls |
 |---|---|---|
-| CIFAR-100-LT IF100 | DDPM, CBDM, T2H, CM, CORAL, CCUA | 300k updates; batch 64; LR 2e-4; U-Net ch=128 [1,2,2,2] attn[1] 2 blocks; EMA 0.9999; T=1000; 50k exact class-uniform samples |
+| CIFAR-100-LT IF100 | DDPM, CBDM, T2H, CM, CORAL, CCUA, IP-SVT, `ipsvt_twin`, `ipsvt_clean` | 300k updates; batch 64; LR 2e-4; U-Net ch=128 [1,2,2,2] attn[1] 2 blocks; EMA 0.9999; T=1000; 50k exact class-uniform samples; DDIM-100 at omega 1.5 |
+
+### The three IP-SVT rows
+
+IP-SVT adds a sparse, class-uniform auxiliary objective on top of the ordinary
+DDPM loss:
+
+```
+L = L_DDPM^natural  +  lambda_aux ( L_twin + lambda_SVT * L_SVT )^class-uniform
+```
+
+`L_twin` asks a small neighbourhood of the class embedding to solve the same
+exact DDPM task, which makes the denoising field locally robust to the class
+condition. `L_SVT` matches the perturbed-condition response geometry to the
+clean one (stopped), so that robustness is not bought by erasing the stochastic
+variation the model already has.
+
+| Row | Flags | Question it answers |
+|---|---|---|
+| `ipsvt` | `--ipsvt --ipsvt_mode=full --ipsvt_lambda_svt=1.0` | the method |
+| `ipsvt_twin` | `--ipsvt --ipsvt_mode=twin --ipsvt_lambda_svt=0.0` | what does condition robustness alone buy? |
+| `ipsvt_clean` | `--ipsvt --ipsvt_mode=clean` | is the gain just extra tail exposure? |
+
+`ipsvt_clean` is the attribution control and the one most easily misread. It
+runs a plain DDPM loss on the *same* class-uniform batches at the *same*
+cadence with no condition perturbation at all. Class-uniform sampling by itself
+gives tail classes more gradient updates, which would improve tail metrics for
+reasons that have nothing to do with the mechanism; this row is what separates
+the two. It matches the auxiliary branch's *data*, not its FLOPs — exposure is
+the confound being removed, compute is not.
+
+All three run the DDPM row's own trainer with extra flags. They are not a
+fork: same data pipeline, same schedule, same sampler, same metric path, so a
+difference between them and `ddpm` is a difference of objective and nothing
+else. `--ipsvt` with `--amp` raises rather than silently skipping the auxiliary
+branch, because a run labelled IP-SVT that trained the baseline objective is
+worse than a crash.
+
+`lambda_SVT` is frozen at 1. A pilot at 20k fine-tuning updates cleared all
+four preregistered success criteria there, and at `lambda_SVT = 10` the same
+statistic that improves tail coverage begins destroying class identity — a
+dose-dependent trade-off, not a better setting waiting to be found. Sweeping it
+inside the headline comparison would be hyperparameter selection on the test
+table.
 
 **Full protocol — `scripts/run_server.sh`:** 54 tasks, all three cells (the
 same controls, plus CIFAR-10-LT IF100 and IF1000). This is the complete
 locked comparison `configs/unified_cifar.yaml` defines; run it once CIFAR-10-LT
 is back in scope.
 
-`OC` is not an extra sixth row: the official `OC_LT` repository calls its
-method T2H. Running both names would double-count the same method.
+`OC` is not an extra row: the official `OC_LT` repository calls its method
+T2H. Running both names would double-count the same method.
 
 **Why 300k updates.** Counted as images seen, 300k x 64 = 19.2M is exactly the
 budget CBDM (300k x 64), CM (300k x 64) and CORAL (150k x 128) each used. A
 smaller shared budget would run CBDM and CM below their own papers' design
 point while running CORAL above its — undertraining two baselines is a
 fairness violation in a way that a uniform surplus is not.
+
+**Why DDIM-100 at omega 1.5.** Every row must reach the *same* sampler,
+otherwise the table compares samplers as much as methods. Which sampler is a
+protocol choice, and this campaign uses 100 DDIM steps.
+
+That choice follows what the papers actually run. `OC_LT`'s published sampling
+command passes `--w 1.5` and leaves `ddim_skip_step` at its default of 10
+(= 100 steps); `CCUA` defaults the same way; `ImbDiff-CM`'s own
+`configs/cifar100lt_ir100/cm.yaml` uses `omega: 1.5` with `ddim_skip_step: 20`
+(= 50 steps). 100 is the majority default, and the extra cost over 50 is
+immaterial next to training.
+
+The campaign previously normalised onto the 1000-step ancestral chain, which is
+twenty times what any of these papers run and cost ~14 h of sampling per task.
+`coral-lt-diffusion` had no DDIM path at all, which is why that was the only
+sampler every repository could reach; `patches/apply_coral_ddim.py` adds one,
+copying CBDM's `forward_ddim` update rule so both repositories run the same
+sampler rather than two implementations that share a name. Measured on this
+box, 200 images: 410 s ancestral vs 75 s at DDIM-100.
+
+The repositories spell the setting two ways — `cm`/`oc`/`ccua` take a skip
+factor, the coral-family trainer takes a step count — so a config can satisfy
+one and silently break the other. Preflight resolves both spellings against
+`fairness_contract.sampler_family` and fails closed on a mismatch.
 
 The source paper for each row is indexed in [papers/README.md](papers/README.md)
 and fetched by `bash papers/fetch_papers.sh`.
@@ -96,6 +169,53 @@ alone — the tables, the per-task status, and the full campaign stdout are all
 readable there without shell access. Both the visibility change and the report
 are best-effort: if either call fails, the run still completes and prints the
 one-time manual UI step instead.
+
+## Reusing checkpoints trained elsewhere
+
+Training is ~95% of a task's cost, so a checkpoint trained on another box
+should never be retrained here. Every phase declares its outputs and is skipped
+when they exist, and the train phase's output is the final checkpoint. Put the
+file where the task expects it and the same launch command evaluates instead of
+trains.
+
+The path is derived from the campaign name, stage, method and seed:
+
+```text
+runs/unified_cifar_c100_v1/<stage>/<method>/seed_<n>/ckpt_300000.pt
+```
+
+```bash
+# where every task expects its checkpoint, printed rather than guessed
+python - <<'EOF'
+from ltx.config import load_campaign
+for t in sorted(load_campaign("configs/unified_cifar_c100.yaml").tasks,
+                key=lambda x: (x.method, x.seed)):
+    print(f"{t.method:12s} seed {t.seed}  {t.run_dir}/ckpt_{t.train['total_steps']}.pt")
+EOF
+```
+
+Stages are `c100_if100_core` for `ddpm`/`cbdm`/`coral`/`ipsvt*`,
+`c100_if100_t2h` for `t2h`, `c100_if100_cm` for `cm`, and `c100_if100_ccua`
+for `ccua`.
+
+Two things to check before trusting a transplanted checkpoint:
+
+**It must be the same architecture and class count.** A CIFAR-10 checkpoint
+loaded into a 100-class model fails with `size mismatch for
+label_embedding.weight`, which is the good case — it fails loudly. A checkpoint
+trained with a different `ch`/`ch_mult`/`num_res_blocks` may load and silently
+evaluate a different model than the table claims, so confirm it was trained
+under this protocol's backbone.
+
+**It must have been trained by the same method.** Nothing in a `.pt` file
+records which objective produced it. Dropping a DDPM checkpoint into
+`ipsvt/seed_0/` produces a row labelled IP-SVT that is really DDPM, and no
+check in this package will catch it. The `flagfile.txt` written next to each
+checkpoint by its own training run is the only provenance there is — copy it
+across with the checkpoint.
+
+A task whose checkpoint is present still runs sampling and metrics, so the
+campaign cost collapses to ~1.4 h per task instead of ~20 h.
 
 ## Operating a run in progress
 
@@ -139,7 +259,7 @@ is missing, rather than letting a campaign burn 300k updates into an eval that
 cannot load its own checkpoint.
 
 `configs/smoke_t2h.yaml` proves that path on a real GPU in about two minutes —
-a 20-step train, then the production ancestral-DDPM eval on a coarse stride:
+a 20-step train, then the production DDIM eval on a coarse stride:
 
 ```bash
 source .venv/bin/activate
@@ -161,6 +281,38 @@ redraws are thinned at the source too; both knobs live under `runtime:` in
 behaviour. Lines that end in a real newline — ordinary logs, tracebacks,
 metric prints, and the final state of each bar — are never dropped, and each
 phase reports how many redraws it suppressed.
+
+## Scope of the experimental programme
+
+What this campaign is and is not, so the numbers are not asked to carry more
+than they can.
+
+**One cell, three seeds.** CIFAR-100-LT at IF100, seeds 0/1/2 for every row.
+CIFAR-10-LT IF100 and IF1000 exist in `configs/unified_cifar.yaml` and are the
+natural second cell; a second cell is what turns "IP-SVT helps here" into "IP-SVT
+helps", so it is the first thing to add when compute allows.
+
+**ImageNet-LT is out of scope.** `OC_LT` and `ImbDiff-CM` both report it and
+`patches/cm_imagenet_lt.yaml` exists, but a 64x64 ImageNet-LT cell is far
+beyond a single-GPU budget. CBDM and CORAL do not report it either, so its
+absence is a limit on breadth rather than a hole in the comparison. **No paper
+in this group evaluates generation on iNaturalist or Places-LT** — those are
+long-tailed *classification* benchmarks, and adding them would not answer a
+question the field is asking.
+
+**Cost.** Measured on one H100: ~12 h (idle GPU) to ~36 h (contended) for 300k
+updates, ~1.4 h to sample 50k images at DDIM-100, ~15 min for metrics. Call it
+~20 h per task, so 27 tasks is roughly three weeks of exclusive GPU time. The
+baselines are 18 of those 27 and are reusable across every future IP-SVT
+change, which is why transplanting them rather than retraining is worth the
+care documented above.
+
+**Seeds are the cheapest thing to cut, and the wrong thing to cut first.** Most
+papers in this area report a single seed. If the budget forces a reduction,
+reduce the two ablation rows (`ipsvt_twin`, `ipsvt_clean`) to one seed before
+touching the headline rows: those two answer a qualitative question — where does
+the gain come from — while the main comparison is the quantitative claim and is
+the one a reviewer will check for variance.
 
 This is a new controlled benchmark, so it must be described as such in a
 paper—not as a bit-for-bit reproduction of any individual paper table. Full

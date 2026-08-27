@@ -109,6 +109,11 @@ class CoralAdapter(Adapter):
                 self._flag("sample_method", evaluate.get("sample_method", "cfg")),
                 self._flag("omega", omega), self._flag("sample_name", sample_name),
             ]
+            # Added by patches/apply_coral_ddim.py. Passed only when the config
+            # asks for it, so an unpatched checkout still runs the ancestral
+            # sampler instead of failing on an unknown flag.
+            if int(evaluate.get("ddim_steps", 0)) > 0:
+                eval_cmd.append(self._flag("ddim_steps", evaluate["ddim_steps"]))
             if train.get("conditional", True): eval_cmd.append("--conditional")
             if evaluate.get("uniform_labels", False): eval_cmd.append("--uniform_labels")
             if evaluate.get("prd", False): eval_cmd.append("--prd")

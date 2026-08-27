@@ -35,11 +35,17 @@ fi
 # checkout or network git clones.
 cp patches/ltx_manifest_dataset.py "$REPOS_ROOT/coral-lt-diffusion/ltx_manifest_dataset.py"
 python patches/apply_coral_weighted_sampler.py "$REPOS_ROOT/coral-lt-diffusion"
+# Must follow the weighted-sampler patch: that one introduces --seed, which the
+# IP-SVT auxiliary branch reads to seed its class-uniform sampler.
+python patches/apply_ipsvt_coral.py "$REPOS_ROOT/coral-lt-diffusion"
 python patches/apply_oc_seed_patch.py "$REPOS_ROOT/OC_LT"
 python patches/apply_oc_metric_weights_patch.py "$REPOS_ROOT/OC_LT"
 python patches/apply_oc_sample_export.py "$REPOS_ROOT/OC_LT"
 python patches/apply_oc_compiled_ckpt.py "$REPOS_ROOT/OC_LT"
 python patches/apply_uniform_eval_labels.py "$REPOS_ROOT"
+# After the uniform-label patch: that one rewrites the same sampler method's
+# signature, and the DDIM branch is inserted inside its body.
+python patches/apply_coral_ddim.py "$REPOS_ROOT/coral-lt-diffusion"
 python patches/apply_cbdm_metric_paths.py "$REPOS_ROOT/CBDM-pytorch"
 python patches/apply_cm_imagenet_lt.py "$REPOS_ROOT/ImbDiff-CM"
 python patches/apply_cm_array_export.py "$REPOS_ROOT/ImbDiff-CM"

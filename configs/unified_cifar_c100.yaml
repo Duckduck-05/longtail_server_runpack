@@ -7,7 +7,7 @@
 # rather than an edit to the locked 54-task unified_cifar_v1 contract.
 campaign:
   name: unified_cifar_c100_v1
-  description: "CIFAR-100-LT-only run: DDPM, CBDM, T2H, CM, CORAL, CCUA"
+  description: "CIFAR-100-LT-only run: DDPM, CBDM, T2H, CM, CORAL, CCUA, IP-SVT (+ two IP-SVT ablation arms)"
   protocol: unified_cifar_v1
   server_config: configs/server.yaml
   paired_seeds: [0, 1, 2]
@@ -16,7 +16,7 @@ campaign:
 
 fairness_contract:
   cells: [cifar100lt_if100]
-  methods: [ddpm, cbdm, t2h, cm, coral, ccua]
+  methods: [ddpm, cbdm, t2h, cm, coral, ccua, ipsvt, ipsvt_twin, ipsvt_clean]
   seeds: [0, 1, 2]
   train_updates: 300000
   train_batch_size: 64
@@ -29,7 +29,15 @@ fairness_contract:
   unet_num_res_blocks: 2
   ema_decay: 0.9999
   conditional_label_schedule: cyclic_class_uniform
-  sampler_family: ancestral_ddpm
+  # DDIM with 100 steps, shared by every method. The point of normalising the
+  # sampler is that all methods use the SAME one, not that it is ancestral: the
+  # previous 1000-step setting cost twenty times as much as anything these
+  # papers actually run. OC_LT and CCUA both default to skip=10 (=100 steps);
+  # ImbDiff-CM's CIFAR-100-LT config uses skip=20. 100 is the majority default
+  # and the extra ~19 GPU-hours over 50 steps is immaterial next to training.
+  # omega 1.5 follows OC_LT's published sampling command (--w 1.5) and
+  # ImbDiff-CM's cifar100lt_ir100 config (omega: 1.5).
+  sampler_family: ddim_100
   metric_protocol: unified_cifar_v1
 
 repositories:
@@ -78,9 +86,9 @@ common_eval: &common_eval
   checkpoint_step: 300000
   num_images: 50000
   sample_batch_size: 64
-  guidance_scale: 1.0
+  guidance_scale: 1.5
   uniform_labels: true
-  sampler_family: ancestral_ddpm
+  sampler_family: ddim_100
   metric_protocol: unified_cifar_v1
   paper_metrics: true
   metrics_file: metrics.unified.json
@@ -96,18 +104,33 @@ stages:
     adapter: coral
     dataset: {name: cifar100lt_if100, data_type: cifar100lt, imbalance_factor: 0.01, split_seed: 0, root: "${LTX_DATA_ROOT:-./data}"}
     train: *common_train
-    eval: {<<: *common_eval, sample_method: cfg}
+    eval: {<<: *common_eval, sample_method: cfg, ddim_steps: 100}
     methods:
       - {name: ddpm}
       - {name: cbdm, flags: [--cb, --tau=1.0]}
       - {name: coral, flags: [--supcon, --supcon_weight=0.01, --supcon_temp=0.09, --temperature_scaling=1.0]}
+      # IP-SVT and its two ablation arms run this stage's own trainer with extra
+      # flags, so they share the ddpm baseline's data pipeline, schedule,
+      # sampler and metric path exactly. lambda_SVT is frozen at 1; the pilot
+      # cleared all four preregistered criteria there and sweeping it inside the
+      # headline comparison would be hyperparameter selection on the test table.
+      #
+      #   ipsvt_clean  class-uniform DDPM auxiliary, no condition perturbation.
+      #                Attribution control: rules out the possibility that tail
+      #                gains come from tail classes simply receiving extra
+      #                auxiliary updates rather than from the mechanism.
+      #   ipsvt_twin   twin-condition DDPM only (lambda_SVT = 0).
+      #   ipsvt        the method: twin + response-geometry transfer.
+      - {name: ipsvt_clean, flags: [--ipsvt, --ipsvt_mode=clean, --ipsvt_batch=16]}
+      - {name: ipsvt_twin, flags: [--ipsvt, --ipsvt_mode=twin, --ipsvt_batch=16, --ipsvt_lambda_svt=0.0]}
+      - {name: ipsvt, flags: [--ipsvt, --ipsvt_mode=full, --ipsvt_batch=16, --ipsvt_lambda_svt=1.0]}
     seeds: [0, 1, 2]
     tags: [unified-cifar-v1, cifar100lt, if100, core]
   - name: c100_if100_t2h
     adapter: oc
     dataset: {name: cifar100lt_if100, data_type: cifar100lt, imbalance_factor: 0.01, split_seed: 0, num_class: 100, root: "${LTX_DATA_ROOT:-./data}"}
     train: *common_train
-    eval: {<<: *common_eval, sample_method: ddpm, ddim_skip_step: 1}
+    eval: {<<: *common_eval, sample_method: ddim, ddim_skip_step: 10}
     methods: [{name: t2h}]
     seeds: [0, 1, 2]
     tags: [unified-cifar-v1, cifar100lt, if100, t2h]
@@ -115,7 +138,7 @@ stages:
     adapter: cm
     dataset: {name: cifar100lt_if100, data_type: cifar100lt, imbalance_factor: 0.01, split_seed: 0, num_classes: 100, img_size: 32, root: "${LTX_DATA_ROOT:-./data}"}
     train: *common_train
-    eval: {<<: *common_eval, sample_method: ddpm, ddim_skip_step: 1}
+    eval: {<<: *common_eval, sample_method: ddim, ddim_skip_step: 10}
     methods: [{name: cm, upstream_method: cm}]
     seeds: [0, 1, 2]
     tags: [unified-cifar-v1, cifar100lt, if100, cm]
@@ -129,7 +152,7 @@ stages:
     adapter: ccua
     dataset: {name: cifar100lt_if100, data_type: cifar100lt, imbalance_factor: 0.01, split_seed: 0, num_class: 100, img_size: 32, root: "${LTX_DATA_ROOT:-./data}"}
     train: *common_train
-    eval: {<<: *common_eval, sample_method: ddpm, ddim_skip_step: 1}
+    eval: {<<: *common_eval, sample_method: ddim, ddim_skip_step: 10}
     methods: [{name: ccua, ccua_al: 1.0, ccua_ucl: 1.0, brs: false}]
     seeds: [0, 1, 2]
     tags: [unified-cifar-v1, cifar100lt, if100, ccua]
