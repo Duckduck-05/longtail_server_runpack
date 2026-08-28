@@ -46,6 +46,7 @@ python patches/apply_uniform_eval_labels.py "$REPOS_ROOT"
 # After the uniform-label patch: that one rewrites the same sampler method's
 # signature, and the DDIM branch is inserted inside its body.
 python patches/apply_coral_ddim.py "$REPOS_ROOT/coral-lt-diffusion"
+python patches/apply_coral_preserve_ckpt.py "$REPOS_ROOT/coral-lt-diffusion"
 python patches/apply_cbdm_metric_paths.py "$REPOS_ROOT/CBDM-pytorch"
 python patches/apply_cm_imagenet_lt.py "$REPOS_ROOT/ImbDiff-CM"
 python patches/apply_cm_array_export.py "$REPOS_ROOT/ImbDiff-CM"
@@ -86,7 +87,7 @@ if [[ -n "${WANDB_API_KEY:-}" && "${WANDB_MODE:-online}" != "offline" ]]; then
   if wandb login --relogin "$WANDB_API_KEY" >/dev/null 2>&1; then
     echo "[bootstrap] W&B authenticated as ${WANDB_ENTITY:-default entity}"
   else
-    echo "[bootstrap] W&B login failed; runs will fall back to offline" >&2
+    echo "[bootstrap] W&B login failed; online workers will stop instead of silently losing logs" >&2
   fi
 fi
 

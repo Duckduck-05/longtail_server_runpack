@@ -124,9 +124,16 @@ def wandb_config(task: Task) -> Dict[str, object]:
     for key in ("total_steps", "batch_size", "lr", "warmup", "T", "dropout", "ema_decay"):
         if key in train:
             config[f"train/{key}"] = train[key]
-    for key in ("num_images", "guidance_scale", "sample_method", "metric_protocol", "uniform_labels"):
+    for key in ("num_images", "guidance_scale", "sample_method", "metric_protocol", "uniform_labels",
+                "inception_batch_size"):
         if key in evaluate:
             config[f"eval/{key}"] = evaluate[key]
+    config.setdefault("eval/inception_batch_size", int(evaluate.get("inception_batch_size", 16)))
+    if task.method_config.get("resume_checkpoint"):
+        config["resume/checkpoint"] = str(task.method_config["resume_checkpoint"])
+        config["resume/mode"] = str(task.method_config.get("resume_mode", "full"))
+        if task.method_config.get("resume_step"):
+            config["resume/step"] = task.method_config["resume_step"]
     flags = task.method_config.get("flags")
     if flags:
         config["method_flags"] = " ".join(map(str, flags))
@@ -180,7 +187,10 @@ def _resolve_wandb_run_identity(task: Task, run_dir: Path) -> tuple[str, str]:
 
 
 def init_wandb(task: Task, run_dir: Path):
-    mode = task.runtime.get("wandb_mode", os.environ.get("WANDB_MODE", "online"))
+    # An explicit process environment is authoritative for direct worker
+    # invocations; the scheduler's serialized task runtime remains the
+    # fallback used by normal campaign launches.
+    mode = str(os.environ.get("WANDB_MODE", task.runtime.get("wandb_mode", "online"))).lower()
     try:
         import wandb
         run_id, start_label = _resolve_wandb_run_identity(task, run_dir)
@@ -208,7 +218,13 @@ def init_wandb(task: Task, run_dir: Path):
             settings=wandb.Settings(start_method="thread"),
         )
     except Exception as exc:
-        print(f"[ltx] W&B disabled for this task: {exc}", flush=True)
+        if mode == "online":
+            raise RuntimeError(
+                "W&B online mode was requested but task logging could not be initialized; "
+                "fix WANDB_API_KEY/network/project settings or explicitly set WANDB_MODE=offline "
+                "or disabled for a run without remote logging"
+            ) from exc
+        print(f"[ltx] W&B unavailable in mode={mode}: {exc}", flush=True)
         return None
 
 
@@ -378,19 +394,21 @@ def main() -> None:
     os.environ.setdefault("WANDB_PROJECT", task.runtime.get("wandb_project", "longtail"))
     os.environ.setdefault("WANDB_DIR", str(run_dir / "wandb"))
 
-    wb_run = init_wandb(task, run_dir)
-    define_wandb_metrics(wb_run)
-    if wb_run is not None:
-        wb_run.summary["status"] = "running"
-        wb_run.summary["gpu_id"] = args.gpu
-        wb_run.summary["effective_batch_size"] = effective_batch
-
-    monitor = Monitor(task.id, run_dir, args.gpu, state, wb_run, interval=int(task.runtime.get("log_system_every_seconds", 30)))
-    monitor.start()
+    wb_run = None
+    monitor = None
     stdout_log = run_dir / "stdout.log"
     exit_code = 1
     message = ""
     try:
+        wb_run = init_wandb(task, run_dir)
+        define_wandb_metrics(wb_run)
+        if wb_run is not None:
+            wb_run.summary["status"] = "running"
+            wb_run.summary["gpu_id"] = args.gpu
+            wb_run.summary["effective_batch_size"] = effective_batch
+
+        monitor = Monitor(task.id, run_dir, args.gpu, state, wb_run, interval=int(task.runtime.get("log_system_every_seconds", 30)))
+        monitor.start()
         adapter = make_adapter(task.adapter, Path(args.root))
         phases = adapter.phases(task, batch_size=batch_size)
         # CBDM/CORAL/OC's own main.py calls wandb.init(project="longtail-baselines", ...)
@@ -448,9 +466,10 @@ def main() -> None:
                 except Exception:
                     pass
     finally:
-        monitor.stop()
-        monitor.join(timeout=5)
-        monitor.finalize()
+        if monitor is not None:
+            monitor.stop()
+            monitor.join(timeout=5)
+            monitor.finalize()
         if wb_run is not None:
             try:
                 if task.runtime.get("upload_stdout_artifact", True) and stdout_log.exists():
@@ -459,6 +478,8 @@ def main() -> None:
                     artifact.add_file(str(stdout_log))
                     artifact.add_file(str(run_dir / "task.resolved.json"))
                     artifact.add_file(str(run_dir / "provenance.json"))
+                    if (run_dir / "RESUME_SOURCE.json").exists():
+                        artifact.add_file(str(run_dir / "RESUME_SOURCE.json"))
                     if (run_dir / "metrics.collected.json").exists():
                         artifact.add_file(str(run_dir / "metrics.collected.json"))
                     wb_run.log_artifact(artifact)

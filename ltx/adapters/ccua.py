@@ -5,7 +5,7 @@ import shlex
 from pathlib import Path
 from typing import List
 
-from .base import Adapter, Phase, resolve_num_workers
+from .base import Adapter, Phase, resolve_inception_batch_size, resolve_num_workers
 from ..config import Task
 
 
@@ -55,6 +55,7 @@ class CCUAAdapter(Adapter):
         run_dir.mkdir(parents=True, exist_ok=True)
         py = task.runtime.get("python", "python")
         train, evaluate = task.train, task.eval
+        inception_batch = resolve_inception_batch_size(evaluate)
         target = int(evaluate.get("checkpoint_step", train.get("total_steps", 300000)))
         batch = int(batch_size or train.get("batch_size", 64))
         num_class = task.dataset.get("num_class", 100)
@@ -158,6 +159,7 @@ class CCUAAdapter(Adapter):
                 "--samples", str(samples), "--labels", str(labels),
                 "--metrics-root", str(Path(task.runtime["repos_root"]) / "CBDM-pytorch" / "stats"),
                 "--output", str(run_dir / metrics_file),
+                "--inception-batch-size", str(inception_batch),
             ]
             if evaluate.get("kid", False):
                 metric_cmd += ["--kid", "--kid-subsets", str(evaluate.get("kid_subsets", 100)),

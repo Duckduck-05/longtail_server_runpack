@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import List
 import yaml
 
-from .base import Adapter, Phase, resolve_num_workers
+from .base import Adapter, Phase, resolve_inception_batch_size, resolve_num_workers
 from ..config import Task
 
 
@@ -24,6 +24,7 @@ class CMAdapter(Adapter):
         repo = self.repo_dir(task)
         run_dir = Path(task.run_dir); run_dir.mkdir(parents=True, exist_ok=True)
         py = task.runtime.get("python", "python")
+        inception_batch = resolve_inception_batch_size(task.eval)
         # The ImageNet-LT port uses the released CM architecture/loss together
         # with the generic LT_Dataset already present in its source tree.
         # CIFAR remains pinned to the authors' original config.
@@ -167,7 +168,7 @@ class CMAdapter(Adapter):
                     "--data-type", str(task.dataset["data_type"]),
                     "--samples", str(samples), "--labels", str(labels),
                     "--metrics-root", str(Path(task.runtime["repos_root"]) / "CBDM-pytorch" / "stats"),
-                    "--output", str(metrics),
+                    "--output", str(metrics), "--inception-batch-size", str(inception_batch),
                 ]
                 if task.eval.get("kid", False):
                     metric_cmd += ["--kid", "--kid-subsets", str(task.eval.get("kid_subsets", 100)),

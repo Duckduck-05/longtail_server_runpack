@@ -30,6 +30,14 @@ echo "[run] full log: $RUN_LOG"
 bash scripts/bootstrap.sh
 source "${LTX_VENV:-$ROOT/.venv}/bin/activate"
 
+if [[ "${WANDB_MODE:-online}" == "online" && -z "${WANDB_API_KEY:-}" ]]; then
+  echo "WANDB_MODE=online but WANDB_API_KEY is empty; copy .env.example to .env.local or set WANDB_MODE=offline/disabled explicitly." >&2
+  exit 2
+fi
+if [[ "${WANDB_MODE:-online}" == "disabled" ]]; then
+  echo "[run] warning: W&B is disabled; task results will remain local under ${RUNS_ROOT}." >&2
+fi
+
 # `torchvision` downloads CIFAR-10/100 automatically during this preparation
 # and during training if necessary.  This derives the one balanced-reference
 # metric asset set used by all five methods.

@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 from typing import List
 
-from .base import Adapter, Phase, resolve_num_workers
+from .base import Adapter, Phase, resolve_inception_batch_size, resolve_num_workers
 from ..config import Task
 
 
@@ -22,6 +22,7 @@ class OCAdapter(Adapter):
     def phases(self, task: Task, batch_size: int | None = None) -> List[Phase]:
         repo = self.repo_dir(task); run_dir = Path(task.run_dir); run_dir.mkdir(parents=True, exist_ok=True)
         py = task.runtime.get("python", "python")
+        inception_batch = resolve_inception_batch_size(task.eval)
         target = int(task.eval.get("checkpoint_step", task.train.get("total_steps", 200000)))
         total_steps = int(task.train.get("total_steps", target)) + 1
         batch = int(batch_size or task.train.get("batch_size", 128))
@@ -84,7 +85,8 @@ class OCAdapter(Adapter):
             metric_cmd = [py, str(self.root / "tools" / "evaluate_coral2025.py"),
                 "--repo", str(Path(task.runtime["repos_root"]) / "CBDM-pytorch"), "--data-type", str(task.dataset["data_type"]),
                 "--samples", str(samples), "--labels", str(labels), "--metrics-root", str(Path(task.runtime["repos_root"]) / "CBDM-pytorch" / "stats"),
-                "--output", str(run_dir / metrics_file)]
+                "--output", str(run_dir / metrics_file),
+                "--inception-batch-size", str(inception_batch)]
             if task.eval.get("kid", False):
                 metric_cmd += ["--kid", "--kid-subsets", str(task.eval.get("kid_subsets", 100)),
                                "--kid-subset-size", str(task.eval.get("kid_subset_size", 1000)),

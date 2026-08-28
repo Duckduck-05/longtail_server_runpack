@@ -83,6 +83,8 @@ def load_campaign(config_path: str | Path) -> LoadedCampaign:
         repo = repos.get(adapter, {})
         stage_train = deep_merge(shared_train if adapter == shared.get("adapter") else {}, stage.get("train", {}))
         stage_eval = deep_merge(shared_eval if adapter == shared.get("adapter") else {}, stage.get("eval", {}))
+        if stage_train.get("resume_checkpoint"):
+            stage_train["resume_checkpoint"] = _resolve(root, str(stage_train["resume_checkpoint"]))
         dataset = dict(stage.get("dataset", {}))
         if dataset.get("root"):
             dataset["root"] = _resolve(root, dataset["root"])
@@ -95,6 +97,8 @@ def load_campaign(config_path: str | Path) -> LoadedCampaign:
             weight_file = method_cfg.get("weight_file", "")
             if weight_file:
                 method_cfg["weight_file"] = _resolve(root, weight_file)
+            if method_cfg.get("resume_checkpoint"):
+                method_cfg["resume_checkpoint"] = _resolve(root, str(method_cfg["resume_checkpoint"]))
             if method_cfg.get("enabled_if_present") and not method_cfg.get("weight_file"):
                 continue
             method = method_cfg["name"]

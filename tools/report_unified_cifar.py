@@ -434,6 +434,7 @@ def main() -> int:
     urls: dict[str, str] = {}
     visibility_note = ""
     wrote_result_files = False
+    wandb_upload_failed = False
     if args.wandb:
         made_public, visibility_note = try_make_project_public(campaign)
         if made_public:
@@ -512,6 +513,7 @@ def main() -> int:
             run.log_artifact(artifact)
             run.finish(exit_code=0 if not incomplete else 2)
         except Exception as exc:
+            wandb_upload_failed = True
             print(f"[report] W&B upload failed: {exc}")
 
     # Without --wandb, or if the upload raised before reaching them, the files
@@ -521,6 +523,11 @@ def main() -> int:
 
     print(f"[report] wrote {output / 'table.md'}; complete cells={len(summary) - len(incomplete)}/{len(summary)}")
     print(f"[report] wrote {output / 'results.log'}")
+    report_mode = str(campaign.server["runtime"].get("wandb_mode", "online")).lower()
+    if args.wandb and report_mode == "online" and wandb_upload_failed:
+        # Keep the local report, but do not let the shell wrapper claim a
+        # successful online hand-off when no W&B run was actually published.
+        return 3
     return 0 if not incomplete else 2
 
 

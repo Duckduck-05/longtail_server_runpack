@@ -272,6 +272,15 @@ def run_preflight(campaign: LoadedCampaign) -> List[Check]:
     cm_dir = repo_root / campaign.raw.get("repositories", {}).get("cm", {}).get("directory", "cm")
     if coral_dir.exists() and not (coral_dir / ".ltx_weighted_sampler_patch_v2").exists():
         checks.append(Check("ERROR", "coral-patch", "v2 sampler/sample_only patch marker missing"))
+    coral_main = coral_dir / "main.py"
+    if coral_dir.exists() and (
+        not coral_main.is_file()
+        or "resume_checkpoint" not in coral_main.read_text(encoding="utf-8")
+        or "allow_non_exact_resume" not in coral_main.read_text(encoding="utf-8")
+    ):
+        checks.append(Check("ERROR", "coral-resume", "explicit external/full-state resume support is missing; pull the current runpack and run bootstrap"))
+    elif coral_dir.exists():
+        checks.append(Check("PASS", "coral-resume", "local and explicit checkpoints are loaded with EMA-only warm starts opt-in"))
     if oc_dir.exists() and not (oc_dir / ".ltx_seed_resume_patch_v2").exists():
         checks.append(Check("ERROR", "oc-patch", "v2 seed/resume patch marker missing"))
     uniform_patch = repo_root / ".ltx_uniform_eval_labels_patch_v1"

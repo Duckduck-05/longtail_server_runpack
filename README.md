@@ -156,6 +156,11 @@ metrics, resolved commands, and artifacts are uploaded to the configured W&B
 project. A missing seed or metric makes the report fail rather than silently
 publishing a partial comparison.
 
+The shared evaluator uses a separate memory-safe Inception micro-batch of 16
+by default. This changes only how inference is split into GPU batches, not the
+50k samples or any metric formula. Override `inception_batch_size` in the
+campaign's `eval` block if the server has a different memory budget.
+
 Given the `WANDB_API_KEY` in `.env.local`, the runner (via `--wandb`, which
 both `run_server_c100.sh` and `run_server.sh` always pass) authenticates once
 at bootstrap, flips the project to public-read, and publishes a W&B Report
@@ -166,17 +171,17 @@ The report URL is printed at the end of the run and recorded in
 Every file listed above is uploaded to that run as the `evaluation-report`
 artifact, so someone running this on your behalf can hand over a W&B link
 alone — the tables, the per-task status, and the full campaign stdout are all
-readable there without shell access. Both the visibility change and the report
-are best-effort: if either call fails, the run still completes and prints the
-one-time manual UI step instead.
+readable there without shell access. Project visibility remains best-effort;
+an online report-upload failure still preserves the local report but exits
+non-zero, so it cannot be mistaken for a successful W&B hand-off.
 
 ## Reusing checkpoints trained elsewhere
 
 Training is ~95% of a task's cost, so a checkpoint trained on another box
 should never be retrained here. Every phase declares its outputs and is skipped
-when they exist, and the train phase's output is the final checkpoint. Put the
-file where the task expects it and the same launch command evaluates instead of
-trains.
+when they exist, and the train phase's output is the final checkpoint. A final
+checkpoint in the expected run directory makes the same launch command run
+evaluation only.
 
 The path is derived from the campaign name, stage, method and seed:
 
@@ -197,6 +202,33 @@ EOF
 Stages are `c100_if100_core` for `ddpm`/`cbdm`/`coral`/`ipsvt*`,
 `c100_if100_t2h` for `t2h`, `c100_if100_cm` for `cm`, and `c100_if100_ccua`
 for `ccua`.
+
+For an intermediate checkpoint from another run, use an explicit resume
+override. The path must be the checkpoint for the selected method/seed; a
+single legacy `ema_model` checkpoint is a warm start, not an exact continuation:
+
+```bash
+python -m ltx.cli run --config configs/unified_cifar_c100.yaml \
+  --resume-method ddpm --resume-seed 0 \
+  --resume-checkpoint /path/to/ckpt_200000.pt \
+  --resume-step 200000 --resume-mode ema_only
+```
+
+For per-seed files, use `{seed}` in the path and omit `--resume-seed`. A full
+native checkpoint can use `--resume-mode full`; Coral then restores its model,
+EMA, optimizer and scheduler state. The default is always fresh task
+configuration plus automatic resume only from a checkpoint already inside
+that task's own run directory. No checkpoint is inferred from another
+campaign, and an EMA-only file is rejected unless `ema_only` is chosen
+explicitly. The selected resume provenance is saved in `task.resolved.json`,
+`RESUME_SOURCE.json` and W&B config.
+
+Do not run a copied `/tmp/*.sh` or vendored `main.py` directly on the server:
+that bypasses the scheduler/state database and the parent W&B run (the child
+trainer is intentionally run with `WANDB_MODE=disabled`). Pull this repository
+on the server and run `scripts/run_server_c100.sh`; with online mode it now
+fails early if W&B credentials are missing instead of completing with no
+online results.
 
 Two things to check before trusting a transplanted checkpoint:
 

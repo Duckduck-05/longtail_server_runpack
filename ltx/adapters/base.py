@@ -21,6 +21,19 @@ def resolve_num_workers(train: Dict, default: int) -> int:
     return int(train.get("num_workers", default))
 
 
+def resolve_inception_batch_size(evaluate: Dict, default: int = 16) -> int:
+    """Validate the GPU micro-batch used by the shared Inception evaluator.
+
+    This is independent of the training and sampling batch sizes.  Keeping it
+    small by default makes the final metric phase robust when several workers
+    share a GPU, without changing the number or identity of metric samples.
+    """
+    value = int(evaluate.get("inception_batch_size", default))
+    if value <= 0:
+        raise ValueError(f"inception_batch_size must be positive, got {value}")
+    return value
+
+
 @dataclass
 class Phase:
     name: str

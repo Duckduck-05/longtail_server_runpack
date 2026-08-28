@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-command entrypoint for the CIFAR-100-LT-only campaign (15 tasks).
+# One-command entrypoint for the CIFAR-100-LT-only campaign (27 tasks).
 #
 # Same env/bootstrap handling as scripts/run_server.sh; only the campaign
 # config differs. Any arguments (e.g. --per-gpu 3 --gpus 0,1,2,3) pass

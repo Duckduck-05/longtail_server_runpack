@@ -10,7 +10,7 @@ bash scripts/run_server_c100.sh
 Không cần clone `Longtail` hay thư mục nào khác. Lệnh tự tạo/cập nhật conda
 environment từ `environment.yml`, bootstrap các third-party đã vendored, đọc
 `.env.local`, tự tải CIFAR-100 bằng `torchvision`, tạo metric assets, rồi
-chạy/resume campaign 18 task (`configs/unified_cifar_c100.yaml`).
+chạy/resume campaign 27 task (`configs/unified_cifar_c100.yaml`).
 
 Khi nào cần chạy đủ cả CIFAR-10-LT + CIFAR-100-LT (54 task, protocol khoá
 cứng gốc), dùng `bash scripts/run_server.sh` thay thế — cùng máy, cùng
@@ -51,8 +51,11 @@ methods/seeds/budget/contract, chỉ khác `fairness_contract.cells` còn một 
   như upstream, chỉ giữ cái mới nhất.
 - 300k×64 = 19.2M ảnh, đúng bằng ngân sách của CBDM (300k×64), CM (300k×64)
   và CORAL (150k×128), nên không baseline nào bị train thiếu so với paper gốc.
-- Eval: 50,000 ảnh 32×32 với nhãn điều kiện đúng class-uniform, ancestral
-  DDPM 1,000 reverse steps, một shared evaluator cho FID/IS/F₈/F₁⁄₈/IPR.
+- Eval: 50,000 ảnh 32×32 với nhãn điều kiện đúng class-uniform, DDIM-100 ở
+  omega=1.5, một shared evaluator cho FID/IS/F₈/F₁⁄₈/IPR/KID và FID theo
+  class/Many-Medium-Few. Initial Inception/FID dùng micro-batch 16 để không
+  OOM khi nhiều task dùng chung GPU; đổi bằng `eval.inception_batch_size` nếu
+  cần.
 
 `OC` là tên repository của paper T2H; không được thêm `oc` thành một method
 riêng — nó sẽ nhân đôi đúng một method. Tương tự, `CCUA` chỉ lấy nhánh U-Net
@@ -91,6 +94,12 @@ upload thành artifact `evaluation-report` của run report. Nghĩa là người
 hộ chỉ cần đưa lại **một link W&B** — bảng, trạng thái từng task, và toàn bộ
 stdout của campaign đều đọc được trên đó, không cần quyền vào máy.
 
+Không chạy các file `/tmp/*.sh` hoặc gọi trực tiếp `third_party/*/main.py`:
+đường đó bypass state database/scheduler và không có parent W&B run. Hãy pull
+đúng repository này trên server rồi chạy `bash scripts/run_server_c100.sh`.
+Nếu `WANDB_MODE=online` mà thiếu key, runner sẽ dừng trước khi chạy thay vì
+hoàn tất mà không có kết quả online.
+
 ## Dừng, bật lại, và task đã fail
 
 Chạy lại `bash scripts/run_server_c100.sh` luôn là lệnh đúng: nó bootstrap lại
@@ -115,6 +124,22 @@ bash scripts/run_server_c100.sh
 
 Task được requeue sẽ skip mọi phase đã có output, nên task T2H đã train xong
 `ckpt_300000.pt` mà chết ở eval chỉ chạy lại eval + metrics, **không train lại**.
+
+Để dùng checkpoint ngoài run directory, phải chỉ rõ method, seed và mode. Full
+checkpoint khôi phục model/EMA/optimizer/scheduler; checkpoint cũ chỉ có
+`ema_model` là **warm start không exact**, cần opt-in:
+
+```bash
+python -m ltx.cli run --config configs/unified_cifar_c100.yaml \
+  --resume-method ddpm --resume-seed 0 \
+  --resume-checkpoint /path/to/ckpt_200000.pt \
+  --resume-step 200000 --resume-mode ema_only
+```
+
+Không có hành vi tự động lấy checkpoint từ campaign khác. Nếu có một file cho
+mỗi seed, dùng `{seed}` trong đường dẫn và bỏ `--resume-seed`. Resume explicit
+được ghi vào task provenance/W&B; state database cũ có fingerprint khác thì
+phải dùng campaign name hoặc `LTX_RUNS_ROOT` mới, tránh trộn hai protocol.
 
 **Lỗi eval của T2H/OC với `torch.compile`.** `OC_LT/main.py` bọc U-Net bằng
 `torch.compile` nên mọi key trong `net_model` có tiền tố `_orig_mod.`, trong khi

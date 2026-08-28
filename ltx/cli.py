@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 import json
 import os
 import signal
@@ -10,6 +11,7 @@ from collections import Counter
 from pathlib import Path
 
 from .config import load_campaign
+from .checkpoints import RESUME_MODES
 from .eval import aggregate
 from .preflight import run_preflight
 from .scheduler import Scheduler
@@ -55,9 +57,84 @@ def apply_machine_overrides(campaign, args) -> None:
         machine["max_concurrent"] = args.jobs
 
 
+def apply_resume_override(campaign, args) -> None:
+    """Attach an explicitly requested external checkpoint to selected tasks.
+
+    The override is part of each task payload, so the campaign fingerprint
+    changes and an old state database cannot silently mix a different
+    provenance.  ``{seed}``, ``{method}``, ``{stage}``, and ``{dataset}`` are
+    supported in the path for a per-task checkpoint layout.
+    """
+    checkpoint_template = getattr(args, "resume_checkpoint", None)
+    mode = getattr(args, "resume_mode", "full")
+    resume_step = getattr(args, "resume_step", None)
+    method = getattr(args, "resume_method", None)
+    seed = getattr(args, "resume_seed", None)
+    stage = getattr(args, "resume_stage", None)
+    if not checkpoint_template:
+        if mode != "full" or resume_step is not None or method or seed is not None or stage:
+            raise ValueError("resume override options require --resume-checkpoint")
+        return
+    if not method:
+        raise ValueError("--resume-checkpoint requires --resume-method so another method cannot be warm-started accidentally")
+    if mode not in RESUME_MODES:
+        raise ValueError(f"--resume-mode must be one of: {', '.join(RESUME_MODES)}")
+    selected = [task for task in campaign.tasks
+                if task.method == method
+                and (seed is None or task.seed == seed)
+                and (stage is None or task.stage == stage)]
+    if not selected:
+        raise ValueError(
+            f"no campaign task matches --resume-method={method!r} "
+            f"--resume-seed={seed!r} --resume-stage={stage!r}"
+        )
+    unsupported = sorted({task.adapter for task in selected if task.adapter != "coral"})
+    if unsupported:
+        raise ValueError(
+            "external Coral resume overrides currently support only coral-adapter tasks; "
+            f"selected adapters={unsupported}"
+        )
+    if seed is None and len(selected) > 1 and "{seed}" not in str(checkpoint_template):
+        raise ValueError(
+            "multiple seeds match; use --resume-seed N for one checkpoint or "
+            "include {seed} in --resume-checkpoint"
+        )
+    if len({task.stage for task in selected}) > 1 and "{stage}" not in str(checkpoint_template):
+        raise ValueError("multiple stages match; use --resume-stage or include {stage} in --resume-checkpoint")
+    if len({str(task.dataset.get("name", "")) for task in selected}) > 1 and "{dataset}" not in str(checkpoint_template):
+        raise ValueError("multiple datasets match; use --resume-stage or include {dataset} in --resume-checkpoint")
+    selected_ids = {task.id for task in selected}
+    updated = []
+    for task in campaign.tasks:
+        if task.id not in selected_ids:
+            updated.append(task)
+            continue
+        try:
+            checkpoint = str(checkpoint_template).format(
+                seed=task.seed, method=task.method, stage=task.stage,
+                dataset=task.dataset.get("name", ""),
+            )
+        except (KeyError, ValueError) as exc:
+            raise ValueError(
+                "--resume-checkpoint may use only {seed}, {method}, {stage}, and {dataset} placeholders"
+            ) from exc
+        cfg = dict(task.method_config)
+        cfg["resume_checkpoint"] = str(Path(checkpoint).expanduser().resolve())
+        cfg["resume_mode"] = mode
+        if resume_step is not None:
+            cfg["resume_step"] = int(resume_step)
+        updated.append(replace(task, method_config=cfg))
+    campaign.tasks = updated
+
+
 def cmd_run(args) -> int:
     campaign = load_campaign(args.config)
-    apply_machine_overrides(campaign, args)
+    try:
+        apply_machine_overrides(campaign, args)
+        apply_resume_override(campaign, args)
+    except ValueError as exc:
+        print(f"[ERROR] run override: {exc}", file=sys.stderr)
+        return 2
     if not args.skip_preflight:
         checks = run_preflight(campaign)
         errors = [c for c in checks if c.level == "ERROR"]
@@ -150,6 +227,18 @@ def main() -> None:
                       help="tasks per GPU: an integer, or 'auto' to pack by free VRAM (default: config's machine.tasks_per_gpu)")
     run.add_argument("--jobs", type=int_or_auto, default=None,
                       help="cap on total concurrent tasks across all GPUs, or 'auto' (default: config's machine.max_concurrent)")
+    run.add_argument("--resume-checkpoint", default=None,
+                     help="explicit checkpoint path; may contain {seed}/{method} (requires --resume-method)")
+    run.add_argument("--resume-method", default=None,
+                     help="method whose task(s) receive --resume-checkpoint, e.g. ddpm")
+    run.add_argument("--resume-seed", type=int, default=None,
+                     help="one seed to resume; omit only when the checkpoint path contains {seed}")
+    run.add_argument("--resume-stage", default=None,
+                     help="one campaign stage to resume when a method occurs in multiple stages")
+    run.add_argument("--resume-mode", choices=RESUME_MODES, default="full",
+                     help="full-state resume (default) or explicit ema_only warm start")
+    run.add_argument("--resume-step", type=int, default=None,
+                     help="completed update number when the checkpoint filename is not ckpt_<step>.pt")
     args = parser.parse_args()
     handlers = {
         "preflight": cmd_preflight, "plan": cmd_plan, "run": cmd_run,

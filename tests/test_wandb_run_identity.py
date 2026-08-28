@@ -1,8 +1,12 @@
 import json
+import sys
+from types import SimpleNamespace
+from pathlib import Path
+import pytest
 
 from ltx.config import load_campaign
 from ltx.metrics import collect_metrics
-from ltx.worker import wandb_config
+from ltx.worker import init_wandb, wandb_config
 
 
 def unified_campaign():
@@ -67,9 +71,25 @@ def test_wandb_config_is_curated_not_a_full_task_dump():
     for key in ("campaign", "dataset", "method", "seed", "train/total_steps",
                 "train/batch_size", "train/lr", "eval/num_images", "eval/metric_protocol"):
         assert key in config, key
+    assert config["eval/inception_batch_size"] == 16
     for absent in ("runtime", "retry", "priority", "tags", "repos_root", "wandb_project"):
         assert absent not in config, absent
     assert len(config) < 30
+
+
+def test_online_wandb_init_fails_closed_instead_of_silently_losing_results(tmp_path, monkeypatch):
+    class BrokenWandb:
+        Settings = lambda self, **kwargs: SimpleNamespace(**kwargs)
+
+        @staticmethod
+        def init(**kwargs):
+            raise OSError("network unavailable")
+
+    task = unified_tasks()[0]
+    monkeypatch.setitem(sys.modules, "wandb", BrokenWandb())
+    monkeypatch.setenv("WANDB_MODE", "online")
+    with pytest.raises(RuntimeError, match="W&B online mode"):
+        init_wandb(task, Path(tmp_path))
 
 
 def test_bookkeeping_values_never_reach_the_metric_stream(tmp_path):

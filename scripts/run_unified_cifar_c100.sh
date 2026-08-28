@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CIFAR-100-LT-only campaign: 15 controlled tasks (DDPM, CBDM, T2H, CM, CORAL
+# CIFAR-100-LT-only campaign: 27 controlled tasks (DDPM, CBDM, T2H, CM, CORAL
 # x seeds 0,1,2) instead of the full 45-task unified_cifar_v1 comparison.
 #
 # Extra arguments (e.g. --per-gpu 3 --gpus 0,1,2,3) pass straight through to
@@ -27,6 +27,19 @@ echo "[run] full log: $RUN_LOG"
 
 bash scripts/bootstrap.sh
 source "${LTX_VENV:-$ROOT/.venv}/bin/activate"
+
+# The worker mirrors child TensorBoard scalars into one parent W&B run.  A
+# direct vendored ``main.py`` invocation (especially with WANDB_MODE=disabled)
+# bypasses that parent and leaves no curves or final metrics online.  Fail
+# before downloading/preparing assets when online logging was requested but
+# cannot be authenticated.
+if [[ "${WANDB_MODE:-online}" == "online" && -z "${WANDB_API_KEY:-}" ]]; then
+  echo "WANDB_MODE=online but WANDB_API_KEY is empty; copy .env.example to .env.local or set WANDB_MODE=offline/disabled explicitly." >&2
+  exit 2
+fi
+if [[ "${WANDB_MODE:-online}" == "disabled" ]]; then
+  echo "[run] warning: W&B is disabled; task results will remain local under ${RUNS_ROOT}." >&2
+fi
 
 # `torchvision` downloads CIFAR-100 automatically during this preparation and
 # during training if necessary. This derives the balanced-reference metric

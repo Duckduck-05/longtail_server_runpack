@@ -85,3 +85,46 @@ def test_oc_compiled_ckpt_patch(tmp_path):
     exec(text.split('def eval():')[0], ns)
     stripped=ns['_strip_compile_prefix']({'_orig_mod.head.weight':1,'head.bias':2})
     assert stripped=={'head.weight':1,'head.bias':2}
+
+
+def test_coral_preserve_ckpt_patch_is_idempotent_and_selective(tmp_path, monkeypatch):
+    repo = tmp_path / 'coral'
+    repo.mkdir()
+    src = '''import os
+
+class _Flags:
+    logdir = None
+    save_step = None
+
+FLAGS = _Flags()
+\ndef save_boundary(logdir, step, save_step):
+    FLAGS.logdir = logdir
+    FLAGS.save_step = save_step
+    if True:
+        if True:
+            if True:
+                prev_ckpt = os.path.join(FLAGS.logdir, 'ckpt_{}.pt'.format(step - FLAGS.save_step))
+                if os.path.exists(prev_ckpt):
+                    os.remove(prev_ckpt)
+'''
+    (repo / 'main.py').write_text(src)
+    root = Path(__file__).resolve().parents[1]
+    script = root / 'patches/apply_coral_preserve_ckpt.py'
+
+    subprocess.run([sys.executable, str(script), str(repo)], check=True)
+    patched = (repo / 'main.py').read_text()
+    subprocess.run([sys.executable, str(script), str(repo)], check=True)
+    assert (repo / 'main.py').read_text() == patched
+
+    ns = {}
+    exec(compile(patched, str(repo / 'main.py'), 'exec'), ns)
+    old_ckpt = repo / 'ckpt_100.pt'
+    old_ckpt.write_bytes(b'checkpoint')
+    monkeypatch.delenv('PRESERVE_CKPT_STEPS', raising=False)
+    ns['save_boundary'](str(repo), 200, 100)
+    assert not old_ckpt.exists()
+
+    old_ckpt.write_bytes(b'checkpoint')
+    monkeypatch.setenv('PRESERVE_CKPT_STEPS', '100, 300')
+    ns['save_boundary'](str(repo), 200, 100)
+    assert old_ckpt.exists()

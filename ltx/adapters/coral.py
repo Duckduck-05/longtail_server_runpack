@@ -5,7 +5,8 @@ import re
 from pathlib import Path
 from typing import List
 
-from .base import Adapter, Phase, resolve_num_workers
+from .base import Adapter, Phase, resolve_inception_batch_size, resolve_num_workers
+from ..checkpoints import get_resume_spec, get_resume_step
 from ..config import Task
 
 
@@ -32,12 +33,13 @@ class CoralAdapter(Adapter):
         return flags
 
     @staticmethod
-    def _latest_checkpoint(run_dir: Path, total_steps: int) -> int:
-        best = 0
+    def _latest_checkpoint(run_dir: Path, total_steps: int) -> int | None:
+        best = None
         for path in run_dir.glob("ckpt_*.pt"):
             match = re.fullmatch(r"ckpt_(\d+)\.pt", path.name)
-            if match and 0 < int(match.group(1)) < total_steps:
-                best = max(best, int(match.group(1)))
+            if match and 0 <= int(match.group(1)) < total_steps:
+                step = int(match.group(1))
+                best = step if best is None else max(best, step)
         return best
 
     def phases(self, task: Task, batch_size: int | None = None) -> List[Phase]:
@@ -47,6 +49,7 @@ class CoralAdapter(Adapter):
         train, evaluate = task.train, task.eval
         batch = int(batch_size or train.get("batch_size", 128))
         total = int(train.get("total_steps", 150000))
+        inception_batch = resolve_inception_batch_size(evaluate)
         py = task.runtime.get("python", "python")
 
         common = [
@@ -60,6 +63,9 @@ class CoralAdapter(Adapter):
 
         train_cmd = [py, "main.py", "--train", *common,
             self._flag("lr", train.get("lr", 2e-4)), self._flag("batch_size", batch),
+            # The Coral source saves the current zero-indexed loop step and
+            # uses an inclusive final step in this campaign, so total+1 is
+            # intentional: it emits ckpt_<total>.pt for the target budget.
             self._flag("total_steps", total + 1), self._flag("save_step", train.get("save_step", 50000)),
             self._flag("sample_step", train.get("sample_step", 10000)), self._flag("eval_step", train.get("eval_step", 0)),
             self._flag("T", train.get("T", 1000)), self._flag("dropout", train.get("dropout", 0.1)),
@@ -89,9 +95,36 @@ class CoralAdapter(Adapter):
         if weight_file:
             train_cmd.append(self._flag("sample_weights", weight_file))
         train_cmd.extend(map(str, task.method_config.get("flags", [])))
-        latest = self._latest_checkpoint(run_dir, total)
-        if latest:
-            train_cmd.append(self._flag("ckpt_step", latest))
+        explicit_resume, resume_mode = get_resume_spec(train, task.method_config)
+        if explicit_resume is not None:
+            resume_step = get_resume_step(train, task.method_config, explicit_resume)
+            if resume_step >= total:
+                raise ValueError(
+                    f"explicit resume checkpoint step {resume_step} must be below "
+                    f"the target total_steps {total}: {explicit_resume}"
+                )
+            train_cmd.extend([
+                self._flag("resume_checkpoint", explicit_resume),
+                self._flag("ckpt_step", resume_step),
+            ])
+            if resume_mode == "ema_only":
+                # The legacy file contains only EMA weights.  The trainer will
+                # initialize a fresh optimizer/scheduler and record this as a
+                # non-exact warm start; it must never be mistaken for a
+                # bit-exact continuation.
+                train_cmd.append("--allow_non_exact_resume")
+        else:
+            latest = self._latest_checkpoint(run_dir, total)
+            if latest is not None:
+                # Checkpoints produced by the patched trainer live in this
+                # run directory.  The upstream flag defaults
+                # ``finetuned_logdir`` to empty, so omitting it makes a rerun
+                # fail to load the checkpoint (or encourage a manual fresh
+                # start).
+                train_cmd.extend([
+                    self._flag("resume_checkpoint", run_dir / f"ckpt_{latest}.pt"),
+                    self._flag("ckpt_step", latest),
+                ])
         phases.append(Phase("train", train_cmd, repo, skip_if_exists=[run_dir / f"ckpt_{total}.pt"]))
 
         scales = task.method_config.get(
@@ -126,7 +159,8 @@ class CoralAdapter(Adapter):
                 metric_cmd = [py, str(self.root / "tools" / "evaluate_coral2025.py"),
                     "--repo", str(Path(task.runtime["repos_root"]) / "CBDM-pytorch"), "--data-type", str(task.dataset["data_type"]),
                     "--samples", str(samples), "--labels", str(labels), "--metrics-root", str(Path(task.runtime["repos_root"]) / "CBDM-pytorch" / "stats"),
-                    "--output", str(run_dir / metrics_file)]
+                    "--output", str(run_dir / metrics_file),
+                    "--inception-batch-size", str(inception_batch)]
                 if evaluate.get("kid", False):
                     metric_cmd += ["--kid", "--kid-subsets", str(evaluate.get("kid_subsets", 100)),
                                    "--kid-subset-size", str(evaluate.get("kid_subset_size", 1000)),

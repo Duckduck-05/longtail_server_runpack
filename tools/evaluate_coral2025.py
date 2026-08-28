@@ -71,6 +71,11 @@ def main() -> None:
     parser.add_argument("--labels", type=Path, required=True)
     parser.add_argument("--metrics-root", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--inception-batch-size", type=int, default=16,
+        help="GPU micro-batch for the pinned Inception FID/IS pass and any "
+             "additional Inception feature extraction (default: 16)",
+    )
     parser.add_argument("--vgg-batch-size", type=int, default=64)
     parser.add_argument("--knn-query-batch", type=int, default=128)
     parser.add_argument("--kid", action="store_true", help="append deterministic CM-style KID to the common metrics JSON")
@@ -81,6 +86,12 @@ def main() -> None:
                         help="optional JSON with per-class FID and CM Many/Medium/Few FIDs")
     parser.add_argument("--longtail-groups", choices=("none", "cm_three_way"), default="none")
     args = parser.parse_args()
+    if args.inception_batch_size <= 0:
+        parser.error("--inception-batch-size must be positive")
+    if args.vgg_batch_size <= 0:
+        parser.error("--vgg-batch-size must be positive")
+    if args.knn_query_batch <= 0:
+        parser.error("--knn-query-batch must be positive")
     images = np.load(args.samples, mmap_mode="r"); labels = np.load(args.labels, mmap_mode="r")
     nclass = 100 if args.data_type == "cifar100lt" else 10
     if images.shape != (50000, 3, 32, 32) or labels.shape != (50000,):
@@ -95,7 +106,8 @@ def main() -> None:
     flags = SimpleNamespace(prd=True, improved_prd=False, data_type=args.data_type)
     (is_score, is_std), fid, prd, _ = get_inception_and_fid_score(
         np.asarray(images), np.asarray(labels), str(args.metrics_root / f"{dataset}.train.npz"),
-        num_images=50000, use_torch=False, FLAGS=flags)
+        num_images=50000, batch_size=args.inception_batch_size,
+        use_torch=False, FLAGS=flags)
     reference_features = np.load(args.metrics_root / f"{dataset}_vgg16_fc2.npy", mmap_mode="r")
     reference_radii = np.load(args.metrics_root / f"{dataset}_vgg16_fc2_k3_radii.npy", mmap_mode="r")
     precision, recall = improved_prd_vgg16_k3(np.asarray(images), np.asarray(reference_features), np.asarray(reference_radii),
@@ -104,10 +116,11 @@ def main() -> None:
                "F_1_8": float(prd[1]), "ImprovedPrecision": float(precision), "Recall": float(recall)}
     payload = {"metrics": metrics,
                "protocol": {"samples": 50000, "labels": "uniform support across classes", "real_reference": "balanced CIFAR train",
-                            "standard_prd": f"InceptionV3, {nclass * 20} clusters", "improved_prd": "VGG16 fc2, exact k-NN manifold k=3"},
+                            "standard_prd": f"InceptionV3, {nclass * 20} clusters", "improved_prd": "VGG16 fc2, exact k-NN manifold k=3",
+                            "inception_batch_size": args.inception_batch_size},
                "label_histogram": counts.tolist()}
     if args.kid or args.per_class_output:
-        generated_features = _inception_features(args.repo, np.asarray(images), batch_size=args.vgg_batch_size)
+        generated_features = _inception_features(args.repo, np.asarray(images), batch_size=args.inception_batch_size)
         reference_features = np.load(args.metrics_root / f"{dataset}_feats.npy", mmap_mode="r")
         if args.kid:
             metrics["KID"] = polynomial_mmd_kid(

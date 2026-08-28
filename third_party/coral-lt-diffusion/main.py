@@ -89,6 +89,12 @@ flags.DEFINE_bool('finetune', False, help='finetuned based on a pretrained model
 flags.DEFINE_string('finetuned_logdir', '', help='logdir for the new model, where FLAGS.logdir will be the folder for \
                      the pretrained model')
 flags.DEFINE_integer('ckpt_step', 0, help='step to reload the pretained checkpoint')
+flags.DEFINE_string(
+    'resume_checkpoint', '',
+    help='explicit checkpoint file for resume; unlike finetuned_logdir this may be outside logdir')
+flags.DEFINE_bool(
+    'allow_non_exact_resume', False,
+    help='explicitly allow an EMA-only checkpoint as a non-exact warm start')
 # SupCon loss parameters
 flags.DEFINE_bool('supcon', False, help='use supervised contrastive loss')
 flags.DEFINE_float('supcon_weight', 0.5, help='weight for supcon loss')
@@ -315,25 +321,66 @@ def train():
         scaler = GradScaler()
         print("Using Automatic Mixed Precision (AMP) for training")
     
-    # Load checkpoint if needed
-    if FLAGS.ckpt_step != 0:
-        ckpt = torch.load(os.path.join(FLAGS.logdir if not FLAGS.finetune else FLAGS.finetuned_logdir,
-                                      'ckpt_{}.pt'.format(FLAGS.ckpt_step)), map_location='cpu')
+    # Load checkpoint if needed.  A named file is accepted so a checkpoint
+    # produced on another server can be resumed without being copied into the
+    # current run directory.  No cross-run discovery happens automatically.
+    resume_source = None
+    if FLAGS.resume_checkpoint or FLAGS.ckpt_step != 0:
+        resume_path = FLAGS.resume_checkpoint or os.path.join(
+            FLAGS.logdir if not FLAGS.finetune else FLAGS.finetuned_logdir,
+            'ckpt_{}.pt'.format(FLAGS.ckpt_step))
+        if not os.path.isfile(resume_path):
+            raise FileNotFoundError(
+                f'explicit resume checkpoint does not exist: {resume_path}')
+        ckpt = torch.load(resume_path, map_location='cpu')
+
         def strip_compile(sd):
             return {k.replace("_orig_mod.", ""): v for k, v in sd.items()}
-        net_model.load_state_dict(strip_compile(ckpt['net_model']))
-        ema_model.load_state_dict(strip_compile(ckpt['ema_model']))
-        optim.load_state_dict(ckpt['optim'])
-        for state in optim.state.values():
-            for k, v in state.items():
-                if isinstance(v, torch.Tensor):
-                    state[k] = v.to(device)
-        sched.load_state_dict(ckpt['sched'])
 
-        # Also load scaler state if it exists
-        if FLAGS.amp and scaler is not None and 'scaler' in ckpt:
-            scaler.load_state_dict(ckpt['scaler'])
-            print(f"Resumed AMP GradScaler state from checkpoint at step {FLAGS.ckpt_step}")
+        if 'step' in ckpt and int(ckpt['step']) != FLAGS.ckpt_step:
+            raise RuntimeError(
+                'resume checkpoint step {} does not match --ckpt_step {}'.format(
+                    ckpt['step'], FLAGS.ckpt_step))
+        if FLAGS.allow_non_exact_resume:
+            if 'ema_model' not in ckpt:
+                raise RuntimeError(
+                    'EMA-only warm start requires checkpoint key ema_model; '
+                    'this file is not a supported Coral checkpoint')
+            ema_state = strip_compile(ckpt['ema_model'])
+            net_model.load_state_dict(ema_state)
+            ema_model.load_state_dict(ema_state)
+            resume_mode = 'ema_only_warm_start'
+            print(
+                f'WARNING: loading EMA weights only from {resume_path}; '
+                'optimizer/scheduler are freshly initialized (non-exact resume)')
+        else:
+            required = ('net_model', 'ema_model', 'optim', 'sched')
+            missing = [key for key in required if key not in ckpt]
+            if missing:
+                raise RuntimeError(
+                    'checkpoint {} is missing full training state: {}. '
+                    'It may be evaluation-only/EMA-only; rerun with '
+                    '--allow_non_exact_resume only when a warm start is scientifically intended.'.format(
+                        resume_path, ', '.join(missing)))
+            net_model.load_state_dict(strip_compile(ckpt['net_model']))
+            ema_model.load_state_dict(strip_compile(ckpt['ema_model']))
+            optim.load_state_dict(ckpt['optim'])
+            for state in optim.state.values():
+                for k, v in state.items():
+                    if isinstance(v, torch.Tensor):
+                        state[k] = v.to(device)
+            sched.load_state_dict(ckpt['sched'])
+
+            # Also load scaler state if it exists.
+            if FLAGS.amp and scaler is not None and 'scaler' in ckpt:
+                scaler.load_state_dict(ckpt['scaler'])
+                print(f"Resumed AMP GradScaler state from checkpoint at step {FLAGS.ckpt_step}")
+            resume_mode = 'full_state'
+        resume_source = {
+            'checkpoint': os.path.abspath(resume_path),
+            'step': FLAGS.ckpt_step,
+            'mode': resume_mode,
+        }
     
     # Initialize trainer with SupCon parameters
     trainer = GaussianDiffusionTrainer(
@@ -359,6 +406,9 @@ def train():
     writer = SummaryWriter(FLAGS.logdir)
     writer.flush()
     wandb.init(project="longtail-baselines", name="coral", config=FLAGS.flag_values_dict(), resume="allow")
+    with open(os.path.join(FLAGS.logdir, 'RESUME_SOURCE.json'), 'w') as f:
+        json.dump(resume_source or {'mode': 'fresh'}, f, indent=2, sort_keys=True)
+        f.write('\n')
     
     # fix seeds for generation to keep generated images comparable
     fixed_x_T = torch.randn(min(FLAGS.sample_size, 100), 3, FLAGS.img_size, FLAGS.img_size)
@@ -376,7 +426,11 @@ def train():
 
     # start training
     loss_tracker = LossTracker(FLAGS.logdir, save_interval=10)
-    with trange(FLAGS.ckpt_step, FLAGS.total_steps, dynamic_ncols=True) as pbar:
+    # Checkpoints are written after the update for their named loop step.  A
+    # resumed run must therefore begin at the next step, otherwise it repeats
+    # the checkpointed update and overshoots the requested budget.
+    resume_start_step = FLAGS.ckpt_step + 1 if (FLAGS.resume_checkpoint or FLAGS.ckpt_step > 0) else 0
+    with trange(resume_start_step, FLAGS.total_steps, dynamic_ncols=True) as pbar:
         for step in pbar:
             # train
             optim.zero_grad()
@@ -487,7 +541,13 @@ def train():
                 
                 torch.save(ckpt, os.path.join(FLAGS.logdir, 'ckpt_{}.pt'.format(step)))
                 prev_ckpt = os.path.join(FLAGS.logdir, 'ckpt_{}.pt'.format(step - FLAGS.save_step))
-                if os.path.exists(prev_ckpt):
+                # ltx_preserve_ckpt_v1: steps named in PRESERVE_CKPT_STEPS are
+                # kept, so a run can be measured at an intermediate budget
+                # without being trained twice. Unset -> upstream behaviour.
+                _preserve = {
+                    int(s) for s in os.environ.get('PRESERVE_CKPT_STEPS', '').split(',') if s.strip()
+                }
+                if os.path.exists(prev_ckpt) and (step - FLAGS.save_step) not in _preserve:
                     os.remove(prev_ckpt)
 
             # evaluate
