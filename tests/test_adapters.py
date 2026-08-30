@@ -1,6 +1,11 @@
+import ast
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 import yaml
 from ltx.adapters.cm import CMAdapter
+from ltx.adapters.coral import CoralAdapter
 from ltx.adapters.oc import OCAdapter
 from ltx.config import Task
 
@@ -49,3 +54,72 @@ def test_oc_explicit_steps_and_resume(tmp_path):
     phases=OCAdapter(Path(__file__).resolve().parents[1]).phases(t)
     cmd=phases[0].command
     assert '--total_steps=200001' in cmd and '--resume' in cmd and '--ckpt_step=100000' in cmd
+
+
+def test_coral_eval_uses_the_cbdm_balanced_fid_cache(tmp_path, monkeypatch):
+    t = task(tmp_path, 'coral')
+    t.dataset['data_type'] = 'cifar100lt'
+    monkeypatch.delenv('LTX_METRICS_ROOT', raising=False)
+
+    phases = CoralAdapter(Path(__file__).resolve().parents[1]).phases(t)
+    eval_phase = next(phase for phase in phases if phase.name == 'eval_w1.0')
+    eval_cmd = eval_phase.command
+    expected_root = (tmp_path / 'repos' / 'CBDM-pytorch' / 'stats').resolve()
+
+    assert f"--fid_cache={expected_root / 'cifar100.train.npz'}" in eval_cmd
+    assert eval_phase.env['LTX_METRICS_ROOT'] == str(expected_root)
+
+
+def test_coral_uses_a_configured_metrics_root_for_fid_and_paper_metrics(tmp_path, monkeypatch):
+    t = task(tmp_path, 'coral')
+    t.dataset['data_type'] = 'cifar100lt'
+    t.eval['paper_metrics'] = True
+    configured = tmp_path / 'custom-metrics'
+    monkeypatch.setenv('LTX_METRICS_ROOT', str(configured))
+
+    phases = CoralAdapter(Path(__file__).resolve().parents[1]).phases(t)
+    eval_phase = next(phase for phase in phases if phase.name == 'eval_w1.0')
+    metrics_phase = next(phase for phase in phases if phase.name == 'paper_metrics_w1.0')
+
+    assert f'--fid_cache={configured / "cifar100.train.npz"}' in eval_phase.command
+    assert str(configured) in metrics_phase.command
+    assert metrics_phase.env['LTX_METRICS_ROOT'] == str(configured)
+
+
+def test_coral_main_requires_an_explicit_matching_fid_cache():
+    source = (Path(__file__).resolve().parents[1] / 'third_party/coral-lt-diffusion/main.py').read_text(
+        encoding='utf-8')
+
+    assert "flags.DEFINE_string('fid_cache', ''," in source
+    assert 'def resolve_fid_cache():' in source
+    assert 'if not FLAGS.fid_cache:' in source
+    assert 'if not fid_cache.is_absolute():' in source
+    assert 'if not fid_cache.is_file():' in source
+    assert 'fid_cache.name != expected_name' in source
+    assert "FLAGS.fid_cache = './stats/" not in source
+
+
+def test_coral_main_rejects_relative_or_wrong_dataset_fid_cache(tmp_path):
+    source = (Path(__file__).resolve().parents[1] / 'third_party/coral-lt-diffusion/main.py').read_text(
+        encoding='utf-8')
+    function = next(
+        node for node in ast.parse(source).body
+        if isinstance(node, ast.FunctionDef) and node.name == 'resolve_fid_cache')
+    flags = SimpleNamespace(data_type='cifar100lt', fid_cache='')
+    namespace = {'FLAGS': flags, 'Path': Path}
+    exec(compile(ast.fix_missing_locations(ast.Module(body=[function], type_ignores=[])), '<coral-main>', 'exec'), namespace)
+
+    expected = tmp_path / 'cifar100.train.npz'
+    expected.write_bytes(b'cache')
+    flags.fid_cache = str(expected)
+    assert namespace['resolve_fid_cache']() == str(expected.resolve())
+
+    flags.fid_cache = 'stats/cifar100.train.npz'
+    with pytest.raises(ValueError, match='absolute --fid_cache'):
+        namespace['resolve_fid_cache']()
+
+    wrong_dataset = tmp_path / 'cifar10.train.npz'
+    wrong_dataset.write_bytes(b'cache')
+    flags.fid_cache = str(wrong_dataset)
+    with pytest.raises(ValueError, match='does not match data_type'):
+        namespace['resolve_fid_cache']()

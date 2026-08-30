@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 from typing import List
@@ -42,6 +43,36 @@ class CoralAdapter(Adapter):
                 best = step if best is None else max(best, step)
         return best
 
+    @staticmethod
+    def _metrics_root(task: Task) -> Path:
+        configured = os.environ.get("LTX_METRICS_ROOT", "").strip()
+        if configured:
+            root = Path(configured).expanduser()
+            if not root.is_absolute():
+                # The runner reads .env.local from the campaign root, while
+                # Coral phases execute from the vendored repository directory.
+                root = Path(task.runtime["repos_root"]).parent / root
+            return root.resolve()
+        return (Path(task.runtime["repos_root"]) / "CBDM-pytorch" / "stats").resolve()
+
+    @classmethod
+    def _fid_cache(cls, task: Task) -> Path:
+        data_type = str(task.dataset.get("data_type", ""))
+        cache_name_by_data_type = {
+            "cifar10": "cifar10.train.npz",
+            "cifar10lt": "cifar10.train.npz",
+            "cifar100": "cifar100.train.npz",
+            "cifar100lt": "cifar100.train.npz",
+        }
+        try:
+            cache_name = cache_name_by_data_type[data_type]
+        except KeyError as exc:
+            raise ValueError(
+                f"Coral has no canonical FID cache for data_type={data_type!r}; "
+                "set an explicit supported CIFAR data_type instead of reusing another dataset's stats"
+            ) from exc
+        return cls._metrics_root(task) / cache_name
+
     def phases(self, task: Task, batch_size: int | None = None) -> List[Phase]:
         repo = self.repo_dir(task)
         run_dir = Path(task.run_dir)
@@ -51,12 +82,14 @@ class CoralAdapter(Adapter):
         total = int(train.get("total_steps", 150000))
         inception_batch = resolve_inception_batch_size(evaluate)
         py = task.runtime.get("python", "python")
+        fid_cache = self._fid_cache(task)
+        metrics_env = {"LTX_METRICS_ROOT": str(fid_cache.parent)}
 
         common = [
             self._flag("data_type", task.dataset.get("data_type", "cifar10lt")),
             self._flag("imb_factor", task.dataset.get("imbalance_factor", 0.01)),
             self._flag("root", task.dataset.get("root", task.runtime.get("data_root", "./data"))),
-            self._flag("logdir", run_dir), self._flag("seed", task.seed),
+            self._flag("logdir", run_dir), self._flag("seed", task.seed), self._flag("fid_cache", fid_cache),
         ]
         if task.dataset.get("frozen_manifest"):
             common.append(self._flag("frozen_manifest", task.dataset["frozen_manifest"]))
@@ -125,7 +158,8 @@ class CoralAdapter(Adapter):
                     self._flag("resume_checkpoint", run_dir / f"ckpt_{latest}.pt"),
                     self._flag("ckpt_step", latest),
                 ])
-        phases.append(Phase("train", train_cmd, repo, skip_if_exists=[run_dir / f"ckpt_{total}.pt"]))
+        phases.append(Phase("train", train_cmd, repo, env=metrics_env,
+                            skip_if_exists=[run_dir / f"ckpt_{total}.pt"]))
 
         scales = task.method_config.get(
             "guidance_scales",
@@ -152,13 +186,14 @@ class CoralAdapter(Adapter):
             if evaluate.get("prd", False): eval_cmd.append("--prd")
             if evaluate.get("improved_prd", False): eval_cmd.append("--improved_prd")
             if not evaluate.get("standard_metrics", True): eval_cmd.append("--sample_only")
-            phases.append(Phase(f"eval_w{omega}", eval_cmd, repo, skip_if_exists=[samples]))
+            phases.append(Phase(f"eval_w{omega}", eval_cmd, repo, env=metrics_env,
+                                skip_if_exists=[samples]))
             if evaluate.get("paper_metrics", False):
                 labels = Path(str(samples).replace("_samples_", "_labels_"))
                 metrics_file = str(evaluate.get("metrics_file", "metrics.paper.json"))
                 metric_cmd = [py, str(self.root / "tools" / "evaluate_coral2025.py"),
                     "--repo", str(Path(task.runtime["repos_root"]) / "CBDM-pytorch"), "--data-type", str(task.dataset["data_type"]),
-                    "--samples", str(samples), "--labels", str(labels), "--metrics-root", str(Path(task.runtime["repos_root"]) / "CBDM-pytorch" / "stats"),
+                    "--samples", str(samples), "--labels", str(labels), "--metrics-root", str(fid_cache.parent),
                     "--output", str(run_dir / metrics_file),
                     "--inception-batch-size", str(inception_batch)]
                 if evaluate.get("kid", False):
@@ -172,7 +207,8 @@ class CoralAdapter(Adapter):
                 metric_outputs = [run_dir / metrics_file]
                 if per_class_file:
                     metric_outputs.append(run_dir / per_class_file)
-                phases.append(Phase(f"paper_metrics_w{omega}", metric_cmd, self.root, skip_if_exists=metric_outputs))
+                phases.append(Phase(f"paper_metrics_w{omega}", metric_cmd, self.root, env=metrics_env,
+                                    skip_if_exists=metric_outputs))
 
         if task.semantic_eval_command:
             omega = scales[-1]

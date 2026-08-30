@@ -2,6 +2,7 @@ import copy
 import json
 import os
 import random
+from pathlib import Path
 from ltx_manifest_dataset import FrozenManifestDataset
 import warnings
 from absl import app, flags
@@ -74,7 +75,7 @@ flags.DEFINE_integer('eval_step', 0, help='frequency of evaluating model, 0 to d
 flags.DEFINE_integer('num_images', 50000, help='the number of generated images for evaluation')
 flags.DEFINE_integer('private_num_images', 0, help='the number of private images for evaluation')
 flags.DEFINE_bool('fid_use_torch', False, help='calculate IS and FID on gpu')
-flags.DEFINE_string('fid_cache', './stats/cifar10.train.npz', help='FID cache')
+flags.DEFINE_string('fid_cache', '', help='required FID cache from the balanced reference dataset')
 flags.DEFINE_string('sample_name', 'saved', help='name for a set of samples to be saved or to be evaluated')
 flags.DEFINE_bool('sampled', False, help='evaluate sampled images')
 flags.DEFINE_string('sample_method', 'cfg', help='sampling method, must be in [cfg, cond, uncond]')
@@ -134,6 +135,39 @@ def ltx_num_classes():
             labels = np.asarray(payload['train_labels'], dtype=np.int64)
         return int(np.max(labels)) + 1
     return 100 if 'cifar100' in FLAGS.data_type else 10
+
+
+def resolve_fid_cache():
+    cache_name_by_data_type = {
+        'cifar10': 'cifar10.train.npz',
+        'cifar10lt': 'cifar10.train.npz',
+        'cifar100': 'cifar100.train.npz',
+        'cifar100lt': 'cifar100.train.npz',
+    }
+    try:
+        expected_name = cache_name_by_data_type[FLAGS.data_type]
+    except KeyError as exc:
+        raise ValueError(
+            'FID evaluation supports only CIFAR-10/CIFAR-100 data types; '
+            'refusing to select reference statistics for {!r}'.format(FLAGS.data_type)) from exc
+    if not FLAGS.fid_cache:
+        raise ValueError(
+            'FID evaluation requires --fid_cache pointing to the balanced {} reference; '
+            'no CWD-relative fallback is used'.format(expected_name))
+    fid_cache = Path(FLAGS.fid_cache).expanduser()
+    if not fid_cache.is_absolute():
+        raise ValueError(
+            'FID evaluation requires an absolute --fid_cache path; '
+            'refusing CWD-relative reference statistics')
+    if not fid_cache.is_file():
+        raise FileNotFoundError(
+            'FID cache does not exist: {} (expected balanced reference {})'.format(
+                fid_cache, expected_name))
+    if fid_cache.name != expected_name:
+        raise ValueError(
+            'FID cache {} does not match data_type {}; expected {}'.format(
+                fid_cache, FLAGS.data_type, expected_name))
+    return str(fid_cache.resolve())
 
 
 def uniform_sampling(n, N, k):
@@ -209,8 +243,9 @@ def evaluate(sampler, model, sampled):
         print('LTX sample_only: arrays and visual grid saved; built-in CIFAR metrics intentionally skipped')
         nan_pair = (float('nan'), float('nan'))
         return nan_pair, float('nan'), nan_pair, nan_pair
+    fid_cache = resolve_fid_cache()
     (IS, IS_std), FID, prd_score, ipr = get_inception_and_fid_score(
-        images, labels, FLAGS.fid_cache, num_images=FLAGS.num_images,
+        images, labels, fid_cache, num_images=FLAGS.num_images,
         use_torch=FLAGS.fid_use_torch, FLAGS=FLAGS)
 
     return (IS, IS_std), FID, prd_score, ipr
@@ -218,6 +253,8 @@ def evaluate(sampler, model, sampled):
 
 def train():
     set_seed(FLAGS.seed)
+    if FLAGS.eval_step > 0 and not FLAGS.sample_only:
+        FLAGS.fid_cache = resolve_fid_cache()
     if FLAGS.augm:
         tran_transform=transforms.Compose([
             transforms.ToTensor(),
@@ -578,6 +615,8 @@ def train():
 
 def eval():
     set_seed(FLAGS.seed)
+    if not FLAGS.sample_only:
+        FLAGS.fid_cache = resolve_fid_cache()
     FLAGS.num_class = ltx_num_classes()
     
     model = UNet(
@@ -593,12 +632,6 @@ def eval():
 
     # load ema model (almost always better than the model) and evaluate
     ckpt = torch.load(os.path.join(FLAGS.logdir, 'ckpt_{}.pt'.format(FLAGS.ckpt_step)), map_location='cpu')
-
-    # Update FID cache path
-    if 'cifar100' in FLAGS.data_type:
-        FLAGS.fid_cache = './stats/cifar100.train.npz'
-    else:
-        FLAGS.fid_cache = './stats/cifar10.train.npz'
 
     if not FLAGS.sampled:
         model.load_state_dict(ckpt['ema_model'])

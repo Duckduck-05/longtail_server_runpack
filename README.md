@@ -17,6 +17,29 @@ metric references, resumes safely when rerun, and launches all 27 CIFAR-100-LT
 tasks (DDPM, CBDM, T2H, CM, CORAL, CCUA, IP-SVT and its two ablation arms
 x seeds 0,1,2; `configs/unified_cifar_c100.yaml`).
 
+### Current execution priority
+
+For the first wave, run and validate only the three headline baselines across
+all paired seeds: `ddpm`, `cbdm`, and `ccua`, each at seeds `0`, `1`, and `2`
+(9 tasks total). This gives the baseline table and seed variance before any
+GPU time is spent on T2H, CM, CORAL, or the IP-SVT/ablation rows. The remaining
+18 tasks stay deferred until this first wave has completed training, sampling,
+and metrics successfully.
+
+This is an operational queue priority, not a change to the locked 27-task
+fairness contract. Keep the same CIFAR-100-LT IF100 data, 300k-update budget,
+50k class-uniform samples, DDIM-100 sampler, and metric protocol for all
+methods when the deferred wave is started.
+
+**DDPM evaluation cache.** The built-in Coral/DDPM evaluator must receive the
+absolute balanced-reference file
+`third_party/CBDM-pytorch/stats/cifar100.train.npz` (or its configured
+`LTX_METRICS_ROOT` equivalent). It no longer guesses `./stats/...` from the
+current working directory or silently selects another dataset's cache. The
+canonical adapter passes this path automatically; after an old eval failure,
+pull this runpack, rerun bootstrap/metric preparation, and rerun the failed
+task. An existing final checkpoint is reused, so this does not retrain it.
+
 **If you already have trained checkpoints, do not retrain.** Each task skips
 its training phase when the final checkpoint is already in place, so dropping
 checkpoints into the run directories turns the same command into an

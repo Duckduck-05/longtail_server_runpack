@@ -530,7 +530,19 @@ def _check_coral_metric_assets(campaign: LoadedCampaign) -> List[Check]:
         return checks
     checks.append(Check("PASS", "coral-source-overlay", "CORAL imports are backed by the pinned CBDM compatibility overlay"))
 
-    metrics_root = Path(os.environ.get("LTX_METRICS_ROOT", str(repo / "stats"))).expanduser()
+    configured_metrics_root = os.environ.get("LTX_METRICS_ROOT", "").strip()
+    if configured_metrics_root:
+        metrics_root = Path(configured_metrics_root).expanduser()
+        if not metrics_root.is_absolute():
+            metrics_root = campaign.root / metrics_root
+        metrics_root = metrics_root.resolve()
+    else:
+        cbdm_cfg = campaign.raw.get("repositories", {}).get("cbdm", {})
+        metrics_root = (
+            Path(campaign.server["runtime"]["repos_root"])
+            / cbdm_cfg.get("directory", "CBDM-pytorch")
+            / "stats"
+        ).resolve()
     wanted = {str(t.dataset.get("data_type", "")) for t in tasks}
     names = set()
     if "cifar10" in wanted or "cifar10lt" in wanted:
