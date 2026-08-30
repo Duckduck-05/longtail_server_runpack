@@ -93,7 +93,7 @@ class CMAdapter(Adapter):
         resolved.write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
 
         ckpt = run_dir / f"ckpt_{checkpoint_step}.pt"
-        metrics = run_dir / "metrics.cm.json"
+        metrics = run_dir / str(task.eval.get("metrics_file", "metrics.cm.json"))
         sample_marker = run_dir / "CM_SAMPLE_DONE"
         import shlex
         sample_core = [py, "tools/sample_images.py", "--config", str(resolved), "--ckpt", str(ckpt)]
@@ -122,7 +122,7 @@ class CMAdapter(Adapter):
                 [py, str(self.root / "tools" / "evaluate_cm_imagenet_lt.py"), "--repo", str(repo),
                  "--image-root", str(dataset_cfg["root"]), "--reference-manifest", str(reference_manifest),
                  "--generated-dir", str(image_dir), "--num-images", str(cfg["evaluation"]["num_images"]),
-                 "--batch-size", str(cfg["evaluation"].get("batch_size", 128)), "--seed", str(task.seed),
+                 "--batch-size", str(inception_batch), "--seed", str(task.seed),
                  "--output", str(metrics)],
                 repo, skip_if_exists=[metrics],
             ))

@@ -31,6 +31,11 @@ fairness contract. Keep the same CIFAR-100-LT IF100 data, 300k-update budget,
 50k class-uniform samples, DDIM-100 sampler, and metric protocol for all
 methods when the deferred wave is started.
 
+The ImageNet-LT experiment below is not part of that first wave. Before using
+it as a comparison, the complete CIFAR-100-LT main table must be filled: all
+27 rows in `configs/unified_cifar_c100.yaml` (including every seed and the
+remaining T2H/CM/CORAL/IP-SVT rows) must have `SUCCESS` and a collected FID.
+
 **DDPM evaluation cache.** The built-in Coral/DDPM evaluator must receive the
 absolute balanced-reference file
 `third_party/CBDM-pytorch/stats/cifar100.train.npz` (or its configured
@@ -45,6 +50,38 @@ its training phase when the final checkpoint is already in place, so dropping
 checkpoints into the run directories turns the same command into an
 evaluation-only pass. See
 [Reusing checkpoints trained elsewhere](#reusing-checkpoints-trained-elsewhere).
+
+### Deferred ImageNet-LT setting (ACCESS or after the main table)
+
+The requested secondary cell is isolated in
+`configs/secondary_imagenet_lt.yaml`: ImageNet-LT at 64×64, 1,000 classes,
+target training batch ≈256, DDPM and CCUA, seed 0, checkpoint/update 300k.
+It reads the pinned ImageNet-LT train manifest rather than silently sampling a
+new imbalance from full ImageNet, generates 50k exact class-uniform samples,
+and reports ImageNet-LT FID/KID. The target batch is 256; the runner may retry
+at a smaller batch after an OOM and records the effective batch in W&B. The
+DDPM row uses CM's native OC/transfer-off ImageNet-LT route; the CCUA row uses
+the patched CCUA U-Net manifest loader, so the two objectives remain explicit
+in the run provenance.
+
+Run this only on ACCESS (recommended because the licensed ImageNet payload is
+large) or after the main CIFAR table is complete. The explicit gate prevents
+accidental mixing with the main campaign:
+
+```bash
+# On ACCESS:
+LTX_IMAGENET_LT_GATE=access bash scripts/run_imagenet_lt_secondary.sh
+
+# After all 27 CIFAR-100-LT rows are complete:
+LTX_IMAGENET_LT_GATE=main_complete bash scripts/run_imagenet_lt_secondary.sh
+```
+
+The launcher prepares the ImageNet files/manifests, applies the CM/CCUA
+manifest-loader patches, checks the main-table gate, and writes the secondary
+report to `runs/secondary_imagenet_lt_v1/report/`. Each method has its own
+W&B run; the final comparison is also uploaded as a W&B table. Do not include
+these two rows in the CIFAR main-table claim or run them as a replacement for
+missing main-table rows.
 
 GPU packing is automatic: the scheduler reads each GPU's free VRAM and packs
 multiple tasks onto one GPU when there's room (starting from a 12 GB/task
@@ -347,13 +384,13 @@ CIFAR-10-LT IF100 and IF1000 exist in `configs/unified_cifar.yaml` and are the
 natural second cell; a second cell is what turns "IP-SVT helps here" into "IP-SVT
 helps", so it is the first thing to add when compute allows.
 
-**ImageNet-LT is out of scope.** `OC_LT` and `ImbDiff-CM` both report it and
-`patches/cm_imagenet_lt.yaml` exists, but a 64x64 ImageNet-LT cell is far
-beyond a single-GPU budget. CBDM and CORAL do not report it either, so its
-absence is a limit on breadth rather than a hole in the comparison. **No paper
-in this group evaluates generation on iNaturalist or Places-LT** — those are
-long-tailed *classification* benchmarks, and adding them would not answer a
-question the field is asking.
+**ImageNet-LT is deferred, not part of the main table.** The optional
+64×64 setting above runs only on ACCESS or after all 27 CIFAR-100-LT main-table
+rows are complete. It is a two-row baseline extension (DDPM/CCUA, seed 0),
+not a substitute for missing CIFAR seeds and not evidence for a main-table
+claim. **No paper in this group evaluates generation on iNaturalist or
+Places-LT** — those are long-tailed *classification* benchmarks, and adding
+them would not answer a question the field is asking.
 
 **Cost.** Measured on one H100: ~12 h (idle GPU) to ~36 h (contended) for 300k
 updates, ~1.4 h to sample 50k images at DDIM-100, ~15 min for metrics. Call it

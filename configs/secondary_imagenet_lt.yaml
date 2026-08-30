@@ -1,0 +1,118 @@
+# Secondary / ACCESS-only ImageNet-LT setting.
+#
+# This is deliberately separate from the locked CIFAR main table.  It contains
+# only the two requested 64x64 rows: a plain DDPM objective and CCUA, seed 0,
+# with the ImageNet-LT train manifest and a checkpoint at update 300,000.
+campaign:
+  name: secondary_imagenet_lt_v1
+  description: "Deferred ImageNet-LT 64x64: DDPM and CCUA, seed 0, 300k"
+  protocol: imagenet_lt_secondary_v1
+  paper_protocol: imagenet_lt_secondary_fid_kid
+  server_config: configs/server.yaml
+  paired_seeds: [0]
+  default_priority: 20
+  strict_preflight: true
+
+# The launcher/preflight requires an explicit value for this gate:
+#   LTX_IMAGENET_LT_GATE=access          # run on ACCESS
+#   LTX_IMAGENET_LT_GATE=main_complete  # only after the CIFAR main table is full
+secondary_gate:
+  main_config: configs/unified_cifar_c100.yaml
+
+repositories:
+  ccua:
+    url: https://github.com/C-Fun/Contrastive-Conditional-Unconditional-Alignment-for-Long-tailed-Diffusion-Model.git
+    commit: baff9def6cfd553d4452d10eab0bac66ec2727aa
+    directory: CCUA-DDPM
+  cm:
+    url: https://github.com/Feng-Hong/ImbDiff-CM.git
+    commit: 04262d7efc4130fda551fa1a1a22d8d5af636899
+    directory: ImbDiff-CM
+
+common_train: &common_train
+  total_steps: 300000
+  # CM's released loop is half-open; this makes checkpoint 300000 the final
+  # update for the DDPM stage. CCUA ignores this compatibility key and applies
+  # its own inclusive endpoint convention in the adapter.
+  inclusive_final_step: true
+  batch_size: 256
+  lr: 0.0002
+  warmup: 5000
+  T: 1000
+  dropout: 0.1
+  num_workers: 8
+  save_step: 50000
+  sample_step: 100000
+  ch: 128
+  ch_mult: [1, 2, 2, 2]
+  attn: [1]
+  num_res_blocks: 2
+  ema_decay: 0.9999
+  conditional: true
+  cfg: true
+
+common_eval: &common_eval
+  checkpoint_step: 300000
+  num_images: 50000
+  sample_batch_size: 64
+  inception_batch_size: 16
+  guidance_scale: 1.5
+  sample_method: ddim
+  ddim_skip_step: 10
+  uniform_labels: true
+  paper_metrics: true
+  metrics_file: metrics.imagenet.json
+  kid_repeats: 2
+
+stages:
+  # DDPM uses CM's native OC/transfer-off route because that is the existing
+  # source-native ImageNet-LT implementation. CCUA uses its own U-Net source
+  # below; the metric protocol is shared, but the upstream implementations stay
+  # identifiable in provenance.
+  - name: imagenet_lt_64_ddpm_secondary
+    adapter: cm
+    priority: 20
+    dataset:
+      name: imagenet_lt_64
+      data_type: imagenet_lt
+      root: ${LTX_IMAGENET_ROOT:-}
+      manifest: ${LTX_IMAGENET_LT_TRAIN_MANIFEST:-}
+      reference_manifest: ${LTX_IMAGENET_LT_REFERENCE_MANIFEST:-}
+      num_class: 1000
+      num_classes: 1000
+      img_size: 64
+    train: *common_train
+    eval: *common_eval
+    methods:
+      - name: ddpm
+        upstream_method: oc
+        config_overrides:
+          transfer:
+            transfer_x0: false
+    seeds: [0]
+    tags: [imagenet-lt, 64x64, secondary, access-only, ddpm, seed-0, 300k]
+
+  - name: imagenet_lt_64_ccua_secondary
+    adapter: ccua
+    priority: 20
+    dataset:
+      name: imagenet_lt_64
+      data_type: imagenet_lt
+      root: ${LTX_IMAGENET_ROOT:-}
+      manifest: ${LTX_IMAGENET_LT_TRAIN_MANIFEST:-}
+      reference_manifest: ${LTX_IMAGENET_LT_REFERENCE_MANIFEST:-}
+      num_class: 1000
+      num_classes: 1000
+      img_size: 64
+    train: *common_train
+    eval: *common_eval
+    methods:
+      - name: ccua
+        objective: ccua
+        ccua_al: 1.0
+        ccua_ucl: 1.0
+    seeds: [0]
+    tags: [imagenet-lt, 64x64, secondary, access-only, ccua, seed-0, 300k]
+
+aggregation:
+  enabled: false

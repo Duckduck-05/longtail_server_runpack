@@ -14,6 +14,7 @@ import numpy as np
 from jsonschema import validate as jsonschema_validate
 
 from .config import LoadedCampaign
+from .completion import check_campaign_complete
 from .gpu import query_gpus
 from .utils import sha256_file
 
@@ -90,6 +91,33 @@ def _validate_imagenet_manifest(root: Path, manifest: Path, name: str, *, requir
             f"{_IMAGENET_LT_TRAIN_IMAGES} images, found {sum(counts.values())}"
         )
     return counts
+
+
+def _check_secondary_imagenet_gate(campaign: LoadedCampaign) -> List[Check]:
+    """Require an explicit ACCESS hand-off or a completed main-table proof."""
+    gate = os.environ.get("LTX_IMAGENET_LT_GATE", "").strip().lower()
+    if gate == "access":
+        return [Check("PASS", "imagenet-lt-gate", "explicit ACCESS hand-off acknowledged")]
+    if gate != "main_complete":
+        return [Check(
+            "ERROR", "imagenet-lt-gate",
+            "set LTX_IMAGENET_LT_GATE=access on ACCESS or main_complete after the CIFAR main table is complete",
+        )]
+
+    configured = campaign.raw.get("secondary_gate", {}).get("main_config", "configs/unified_cifar_c100.yaml")
+    config_path = Path(configured).expanduser()
+    if not config_path.is_absolute():
+        config_path = (campaign.root / config_path).resolve()
+    try:
+        main, incomplete = check_campaign_complete(config_path)
+    except Exception as exc:
+        return [Check("ERROR", "imagenet-lt-main-table", f"cannot load main-table config {config_path}: {exc}")]
+    if incomplete:
+        preview = "; ".join(incomplete[:8])
+        if len(incomplete) > 8:
+            preview += f"; ... ({len(incomplete)} incomplete)"
+        return [Check("ERROR", "imagenet-lt-main-table", f"main table is not complete: {preview}")]
+    return [Check("PASS", "imagenet-lt-main-table", f"verified {len(main.tasks)} main-table tasks with SUCCESS and FID")]
 
 
 def _load_manifest(path: Path) -> Tuple[Dict, np.ndarray, np.ndarray, str]:
@@ -334,12 +362,83 @@ def run_preflight(campaign: LoadedCampaign) -> List[Check]:
                     except Exception as exc:
                         checks.append(Check("ERROR", f"imagenet-lt-{label}-distribution", str(exc)))
 
+    if campaign.raw.get("campaign", {}).get("paper_protocol") == "imagenet_lt_secondary_fid_kid":
+        checks.extend(_check_secondary_imagenet_gate(campaign))
+        ccua_dir = repo_root / campaign.raw.get("repositories", {}).get("ccua", {}).get("directory", "CCUA-DDPM")
+        imagenet_tasks = [task for task in campaign.tasks if task.dataset.get("data_type") == "imagenet_lt"]
+        if not imagenet_tasks:
+            checks.append(Check("ERROR", "imagenet-lt-tasks", "secondary ImageNet-LT protocol requires ImageNet-LT tasks"))
+        else:
+            expected = {("ddpm", 0), ("ccua", 0)}
+            actual = {(task.method, int(task.seed)) for task in imagenet_tasks}
+            if actual != expected or len(imagenet_tasks) != len(expected):
+                checks.append(Check("ERROR", "imagenet-lt-contract", f"expected DDPM/CCUA seed 0 exactly once, found {sorted(actual)}"))
+            else:
+                checks.append(Check("PASS", "imagenet-lt-contract", "DDPM + CCUA, seed 0, exactly two secondary tasks"))
+            ddpm_tasks = [task for task in imagenet_tasks if task.method == "ddpm"]
+            ccua_tasks = [task for task in imagenet_tasks if task.method == "ccua"]
+            if ddpm_tasks and any(task.adapter != "cm" for task in ddpm_tasks):
+                checks.append(Check("ERROR", "imagenet-lt-ddpm-adapter", "DDPM must use CM's native ImageNet-LT OC/transfer-off route"))
+            if ddpm_tasks:
+                if not (cm_dir / ".ltx_cm_imagenet_lt_patch_v1").is_file():
+                    checks.append(Check("ERROR", "cm-imagenet-port", "CM ImageNet-LT loader patch marker missing; run bootstrap"))
+                else:
+                    checks.append(Check("PASS", "cm-imagenet-port", "DDPM uses CM's manifest-backed ImageNet-LT loader"))
+            if ccua_tasks:
+                if not (ccua_dir / ".ltx_ccua_imagenet_lt_patch_v1").is_file():
+                    checks.append(Check("ERROR", "ccua-imagenet-port", "CCUA ImageNet-LT manifest loader patch marker missing; run bootstrap"))
+                else:
+                    checks.append(Check("PASS", "ccua-imagenet-port", "CCUA reads the pinned ImageNet-LT train manifest"))
+                if not (ccua_dir / ".ltx_ccua_sample_export_v1").is_file():
+                    checks.append(Check("ERROR", "ccua-sample-export", "CCUA sample-output/uniform-label patch marker missing; run bootstrap"))
+                else:
+                    checks.append(Check("PASS", "ccua-sample-export", "CCUA exports arrays and exact class-uniform labels"))
+            setting_errors: list[str] = []
+            for task in imagenet_tasks:
+                prefix = f"{task.method}/seed{task.seed}"
+                expected_adapter = {"ddpm": "cm", "ccua": "ccua"}.get(task.method)
+                if task.adapter != expected_adapter: setting_errors.append(f"{prefix}: adapter={task.adapter}")
+                if int(task.dataset.get("img_size", -1)) != 64: setting_errors.append(f"{prefix}: img_size")
+                if int(task.dataset.get("num_class", task.dataset.get("num_classes", -1))) != 1000: setting_errors.append(f"{prefix}: num_classes")
+                if int(task.train.get("total_steps", -1)) != 300000: setting_errors.append(f"{prefix}: total_steps")
+                if int(task.train.get("batch_size", -1)) != 256: setting_errors.append(f"{prefix}: batch_size")
+                if int(task.eval.get("checkpoint_step", -1)) != 300000: setting_errors.append(f"{prefix}: checkpoint_step")
+                if int(task.eval.get("num_images", -1)) != 50000: setting_errors.append(f"{prefix}: num_images")
+                if not task.eval.get("uniform_labels", False): setting_errors.append(f"{prefix}: uniform_labels")
+            if setting_errors:
+                checks.append(Check("ERROR", "imagenet-lt-controls", "; ".join(setting_errors)))
+            else:
+                checks.append(Check("PASS", "imagenet-lt-controls", "64x64, batch target 256, 300k endpoint, 50k uniform samples"))
+            resolved: Dict[str, Path] = {}
+            for key in ("root", "manifest", "reference_manifest"):
+                values = {str(task.dataset.get(key, "")).strip() for task in imagenet_tasks}
+                if not values or "" in values:
+                    checks.append(Check("ERROR", f"imagenet-lt-{key}", f"set valid ImageNet-LT dataset.{key} / .env.local"))
+                    continue
+                if len(values) != 1:
+                    checks.append(Check("ERROR", f"imagenet-lt-{key}", f"ImageNet-LT tasks disagree on dataset.{key}: {sorted(values)}"))
+                    continue
+                path = Path(values.pop())
+                valid = path.is_dir() if key == "root" else path.is_file()
+                checks.append(Check("PASS" if valid else "ERROR", f"imagenet-lt-{key}", str(path) if valid else f"invalid path: {path}"))
+                if valid:
+                    resolved[key] = path
+            if set(resolved) == {"root", "manifest", "reference_manifest"}:
+                for key, require_balanced in (("manifest", False), ("reference_manifest", True)):
+                    label = "train" if key == "manifest" else "reference"
+                    try:
+                        counts = _validate_imagenet_manifest(resolved["root"], resolved[key], label, require_balanced=require_balanced)
+                        checks.append(Check("PASS", f"imagenet-lt-{label}-distribution",
+                                            f"n={sum(counts.values())}, classes=1000, min/class={min(counts.values())}, max/class={max(counts.values())}"))
+                    except Exception as exc:
+                        checks.append(Check("ERROR", f"imagenet-lt-{label}-distribution", str(exc)))
+
     critical = [t for t in campaign.tasks if t.stage == campaign.raw.get("aggregation", {}).get("semantic_primary_stage", "decisive_semantic_gate")]
     if critical: checks.extend(_check_semantic_bundle(campaign, critical))
     needs_cm_native_metrics = any(
         task.adapter == "cm" and task.eval.get("metric_protocol") != "unified_cifar_v1"
         for task in campaign.tasks
-    )
+    ) or campaign.raw.get("campaign", {}).get("paper_protocol") == "imagenet_lt_secondary_fid_kid"
     if cm_dir.exists() and needs_cm_native_metrics:
         cm_weight = cm_dir / "stats" / "pt_inception-2015-12-05-6726825d.pth"
         cm_weight_metadata = cm_weight.with_name(cm_weight.name + ".ltx.json")

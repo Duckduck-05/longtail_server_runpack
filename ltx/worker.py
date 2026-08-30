@@ -121,6 +121,9 @@ def wandb_config(task: Task) -> Dict[str, object]:
         "upstream_commit": task.repository.get("commit"),
         "run_dir": task.run_dir,
     }
+    for key in ("data_type", "img_size", "num_class", "num_classes"):
+        if key in task.dataset:
+            config[f"dataset/{key}"] = task.dataset[key]
     for key in ("total_steps", "batch_size", "lr", "warmup", "T", "dropout", "ema_decay"):
         if key in train:
             config[f"train/{key}"] = train[key]

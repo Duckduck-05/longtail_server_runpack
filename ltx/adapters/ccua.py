@@ -16,7 +16,14 @@ class CCUAAdapter(Adapter):
     flag defaults already match the unified backbone (ch=128, [1,2,2,2], attn[1],
     2 blocks, EMA 0.9999, T=1000). Its long-tailed CIFAR split is the same
     ``ImbalanceCIFAR`` construction CBDM uses with ``rand_number=0``, so every
-    row of the table trains on an identical subset.
+    row of the table trains on an identical subset.  For the deferred
+    ImageNet-LT cell, ``data_type=imagenet_lt`` selects the bootstrap-installed
+    manifest loader; this is important because the released ImageFolder path
+    would otherwise train on all of ImageNet instead of the published LT split.
+
+    The same adapter can express the plain DDPM objective by setting
+    ``objective=ddpm`` (or explicit CCUA weights of zero) while retaining the
+    CCUA U-Net/data/checkpoint plumbing.
 
     Sampling goes through ``main.py --sample`` rather than upstream
     ``evaluate.py``: the latter imports CCUA's own FLD/CLIP/DINOv2 metric stack
@@ -58,7 +65,7 @@ class CCUAAdapter(Adapter):
         inception_batch = resolve_inception_batch_size(evaluate)
         target = int(evaluate.get("checkpoint_step", train.get("total_steps", 300000)))
         batch = int(batch_size or train.get("batch_size", 64))
-        num_class = task.dataset.get("num_class", 100)
+        num_class = task.dataset.get("num_class", task.dataset.get("num_classes", 100))
         img_size = task.dataset.get("img_size", 32)
         data_root = task.dataset.get("root", task.runtime.get("data_root", "./data"))
 
@@ -67,8 +74,11 @@ class CCUAAdapter(Adapter):
         # paper's alpha=gamma=0.05 is tuned for the DiT/SiT ImageNet pipeline,
         # whose latent-space loss scales are not comparable. Overridable per
         # method in the campaign YAML.
-        ccua_al = method_cfg.get("ccua_al", 1.0)
-        ccua_ucl = method_cfg.get("ccua_ucl", 1.0)
+        objective = str(method_cfg.get("objective", task.method)).lower()
+        if objective not in {"ddpm", "ccua"}:
+            raise ValueError(f"CCUA U-Net adapter supports objective=ddpm or ccua, got {objective!r}")
+        ccua_al = method_cfg.get("ccua_al", 0.0 if objective == "ddpm" else 1.0)
+        ccua_ucl = method_cfg.get("ccua_ucl", 0.0 if objective == "ddpm" else 1.0)
 
         train_cmd = [
             py, "main.py", "--train",
@@ -90,6 +100,11 @@ class CCUAAdapter(Adapter):
             "--nocbdm", "--notransfer_x0",
             f"--ccua_al={ccua_al}", f"--ccua_ucl={ccua_ucl}",
         ]
+        if task.dataset.get("data_type") == "imagenet_lt":
+            manifest = str(task.dataset.get("manifest", "")).strip()
+            if not manifest:
+                raise ValueError("ImageNet-LT requires dataset.manifest for the CCUA loader")
+            train_cmd.append(f"--train_manifest={manifest}")
         train_cmd += self._backbone_flags(train)
         # The paper applies batch resampling only to ImageNet-LT and
         # TinyImageNet-LT, explicitly not to CIFAR-LT, so it stays off unless a
@@ -152,6 +167,33 @@ class CCUAAdapter(Adapter):
             metrics_file = str(evaluate.get("metrics_file", "metrics.paper.json"))
             if not single:
                 metrics_file = metrics_file.replace(".json", f"{suffix}.json")
+            if task.dataset.get("data_type") == "imagenet_lt":
+                reference_manifest = str(task.dataset.get("reference_manifest", "")).strip()
+                if not reference_manifest:
+                    raise ValueError("ImageNet-LT requires dataset.reference_manifest for metrics")
+                metric_repo = Path(task.runtime["repos_root"]) / str(
+                    task.method_config.get("metric_repo", "ImbDiff-CM")
+                )
+                phases.append(Phase(
+                    f"paper_metrics{suffix}",
+                    [
+                        py, str(self.root / "tools" / "evaluate_imagenet_lt.py"),
+                        "--repo", str(metric_repo),
+                        "--image-root", str(data_root),
+                        "--reference-manifest", reference_manifest,
+                        "--samples", str(samples), "--labels", str(labels),
+                        "--num-images", str(evaluate.get("num_images", 50000)),
+                        "--image-size", str(img_size),
+                        "--num-classes", str(num_class),
+                        "--batch-size", str(inception_batch),
+                        "--kid-repeats", str(evaluate.get("kid_repeats", 2)),
+                        "--seed", str(task.seed),
+                        "--output", str(run_dir / metrics_file),
+                    ],
+                    self.root,
+                    skip_if_exists=[run_dir / metrics_file],
+                ))
+                continue
             metric_cmd = [
                 py, str(self.root / "tools" / "evaluate_coral2025.py"),
                 "--repo", str(Path(task.runtime["repos_root"]) / "CBDM-pytorch"),
