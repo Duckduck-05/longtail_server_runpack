@@ -2,7 +2,7 @@
 # One-command entrypoint for a fresh CUDA server.
 #
 # Any arguments (e.g. --per-gpu 3 --gpus 0,1,2,3) pass through to
-# run_unified_cifar.sh -> `ltx.cli run`. With no arguments, GPU packing
+# the native CIFAR baseline launcher -> `ltx.cli run`. With no arguments, GPU packing
 # auto-detects from free VRAM.
 set -euo pipefail
 
@@ -33,6 +33,7 @@ else
 fi
 
 export PYTHON_BIN="$candidate"
-# The hand-off command runs one fair table, not a concatenation of paper
-# reproductions with incompatible budgets and metrics.
-exec bash scripts/run_unified_cifar.sh "$@"
+# The default entrypoint is the native CIFAR-100-LT baseline wave. The older
+# unified-host launchers remain available only for explicitly named secondary
+# experiments and are not the main table.
+exec bash scripts/run_native_cifar_c100.sh "$@"

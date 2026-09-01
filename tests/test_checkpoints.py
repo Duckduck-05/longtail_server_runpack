@@ -38,6 +38,9 @@ def test_resume_step_comes_from_filename_or_explicit_override(tmp_path):
     with pytest.raises(ValueError, match="cannot infer resume step"):
         get_resume_step({}, {}, checkpoint)
     assert get_resume_step({}, {"resume_step": 42}, checkpoint) == 42
+    namespaced = tmp_path / "ckpt_unified_v2_200000.pt"
+    namespaced.write_bytes(b"x")
+    assert get_resume_step({}, {}, namespaced) == 200000
 
 
 def test_checkpoint_key_validation_rejects_legacy_file_for_exact_resume():

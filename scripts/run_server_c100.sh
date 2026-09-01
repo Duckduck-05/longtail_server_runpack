@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# One-command entrypoint for the CIFAR-100-LT-only campaign (27 tasks).
+# One-command entrypoint for the main CIFAR-100-LT baseline campaign (9 tasks).
 #
 # Same env/bootstrap handling as scripts/run_server.sh; only the campaign
 # config differs. Any arguments (e.g. --per-gpu 3 --gpus 0,1,2,3) pass
-# through to run_unified_cifar_c100.sh -> `ltx.cli run`.
+# through to run_native_cifar_c100.sh -> `ltx.cli run`.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -33,4 +33,4 @@ else
 fi
 
 export PYTHON_BIN="$candidate"
-exec bash scripts/run_unified_cifar_c100.sh "$@"
+exec bash scripts/run_native_cifar_c100.sh "$@"

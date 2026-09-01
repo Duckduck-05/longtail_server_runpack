@@ -6,7 +6,7 @@
 # so it is a separate, self-consistent campaign (own name, own state.sqlite)
 # rather than an edit to the locked 54-task unified_cifar_v1 contract.
 campaign:
-  name: unified_cifar_c100_v1
+  name: unified_cifar_c100_t2h_v1
   description: "CIFAR-100-LT-only run: DDPM, CBDM, T2H, CM, CORAL, CCUA, IP-SVT (+ two IP-SVT ablation arms)"
   protocol: unified_cifar_v1
   server_config: configs/server.yaml
@@ -22,7 +22,14 @@ fairness_contract:
   train_batch_size: 64
   learning_rate: 0.0002
   diffusion_steps: 1000
+  beta_1: 0.0001
+  beta_T: 0.02
+  var_type: fixedlarge
+  grad_clip: 1.0
   generated_images: 50000
+  guidance_scale: 1.5
+  checkpoint_prefix: ckpt_unified_v2_
+  artifact_namespace: t2h_unified_v2
   unet_ch: 128
   unet_ch_mult: [1, 2, 2, 2]
   unet_attn: [1]
@@ -39,28 +46,16 @@ fairness_contract:
   # ImbDiff-CM's cifar100lt_ir100 config (omega: 1.5).
   sampler_family: ddim_100
   metric_protocol: unified_cifar_v1
+  host_revision: t2h-unified-common-v2
 
 repositories:
-  ccua:
-    url: https://github.com/C-Fun/Contrastive-Conditional-Unconditional-Alignment-for-Long-tailed-Diffusion-Model.git
-    commit: baff9def6cfd553d4452d10eab0bac66ec2727aa
-    directory: CCUA-DDPM
-  coral:
-    url: https://github.com/SankarLab/coral-lt-diffusion.git
-    commit: 62c9dfad2da13f5be0f28975e5cd36727c1acc7a
-    directory: coral-lt-diffusion
-  cbdm:
-    url: https://github.com/qym7/CBDM-pytorch.git
-    commit: 513f7fffe7369343499611a8f68212a8b40f11a1
-    directory: CBDM-pytorch
-  oc:
+  # All benchmark rows execute from this OC_LT/T2H host. The original
+  # repositories are recorded in THIRD_PARTY_MANIFEST.json and the archive,
+  # but are not runtime dependencies of this campaign.
+  t2h_unified:
     url: https://github.com/MediaBrain-SJTU/OC_LT.git
     commit: ced184378e8dc784958b6e14fd687781babd836d
-    directory: OC_LT
-  cm:
-    url: https://github.com/Feng-Hong/ImbDiff-CM.git
-    commit: 04262d7efc4130fda551fa1a1a22d8d5af636899
-    directory: ImbDiff-CM
+    directory: T2H-unified
 
 common_train: &common_train
   total_steps: 300000
@@ -69,7 +64,11 @@ common_train: &common_train
   lr: 0.0002
   warmup: 5000
   T: 1000
+  beta_1: 0.0001
+  beta_T: 0.02
+  var_type: fixedlarge
   dropout: 0.1
+  grad_clip: 1.0
   num_workers: 4
   save_step: 50000
   sample_step: 100000
@@ -81,6 +80,7 @@ common_train: &common_train
   conditional: true
   cfg: true
   amp: false
+  checkpoint_prefix: ckpt_unified_v2_
 
 common_eval: &common_eval
   checkpoint_step: 300000
@@ -89,26 +89,32 @@ common_eval: &common_eval
   guidance_scale: 1.5
   uniform_labels: true
   sampler_family: ddim_100
+  sample_method: ddim
+  ddim_skip_step: 10
   metric_protocol: unified_cifar_v1
   paper_metrics: true
-  metrics_file: metrics.unified.json
+  artifact_namespace: t2h_unified_v2
+  metrics_file: metrics.unified.v2.json
   kid: true
   kid_subsets: 100
   kid_subset_size: 1000
   kid_seed: 2026
-  per_class_metrics_file: metrics.per_class.json
+  # Runtime-only evaluator tuning; metric definition and sample count are unchanged.
+  vgg_batch_size: 128
+  knn_query_batch: 1024
+  per_class_metrics_file: metrics.per_class.v2.json
   longtail_groups: cm_three_way
 
 stages:
   - name: c100_if100_core
-    adapter: coral
+    adapter: t2h_unified
     dataset: {name: cifar100lt_if100, data_type: cifar100lt, imbalance_factor: 0.01, split_seed: 0, root: "${LTX_DATA_ROOT:-./data}"}
     train: *common_train
-    eval: {<<: *common_eval, sample_method: cfg, ddim_steps: 100}
+    eval: {<<: *common_eval}
     methods:
       - {name: ddpm}
       - {name: cbdm, flags: [--cb, --tau=1.0]}
-      - {name: coral, flags: [--supcon, --supcon_weight=0.01, --supcon_temp=0.09, --temperature_scaling=1.0]}
+      - {name: coral, coral_projection_dim: 128, flags: [--supcon, --supcon_weight=0.01, --supcon_temp=0.09, --temperature_scaling=1.0]}
       # IP-SVT and its two ablation arms run this stage's own trainer with extra
       # flags, so they share the ddpm baseline's data pipeline, schedule,
       # sampler and metric path exactly. lambda_SVT is frozen at 1; the pilot
@@ -127,7 +133,7 @@ stages:
     seeds: [0, 1, 2]
     tags: [unified-cifar-v1, cifar100lt, if100, core]
   - name: c100_if100_t2h
-    adapter: oc
+    adapter: t2h_unified
     dataset: {name: cifar100lt_if100, data_type: cifar100lt, imbalance_factor: 0.01, split_seed: 0, num_class: 100, root: "${LTX_DATA_ROOT:-./data}"}
     train: *common_train
     eval: {<<: *common_eval, sample_method: ddim, ddim_skip_step: 10}
@@ -135,7 +141,7 @@ stages:
     seeds: [0, 1, 2]
     tags: [unified-cifar-v1, cifar100lt, if100, t2h]
   - name: c100_if100_cm
-    adapter: cm
+    adapter: t2h_unified
     dataset: {name: cifar100lt_if100, data_type: cifar100lt, imbalance_factor: 0.01, split_seed: 0, num_classes: 100, img_size: 32, root: "${LTX_DATA_ROOT:-./data}"}
     train: *common_train
     eval: {<<: *common_eval, sample_method: ddim, ddim_skip_step: 10}
@@ -149,7 +155,7 @@ stages:
   # stays off: the paper applies it to ImageNet-LT/TinyImageNet-LT and states it
   # is not used on CIFAR-LT.
   - name: c100_if100_ccua
-    adapter: ccua
+    adapter: t2h_unified
     dataset: {name: cifar100lt_if100, data_type: cifar100lt, imbalance_factor: 0.01, split_seed: 0, num_class: 100, img_size: 32, root: "${LTX_DATA_ROOT:-./data}"}
     train: *common_train
     eval: {<<: *common_eval, sample_method: ddim, ddim_skip_step: 10}

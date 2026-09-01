@@ -1,0 +1,105 @@
+# Main CIFAR-100-LT IF100 baseline campaign.
+#
+# This is the main native baseline contract: DDPM, CBDM, and CCUA all use the
+# CCUA-DDPM U-Net, checkpoint, and sampler plumbing. The shared metric host is
+# retained below only for the evaluator/reference cache; it is not a training
+# adapter. Keep this matrix small until all nine baseline rows are complete.
+campaign:
+  name: native_cifar100_if100_v1
+  protocol: native_cifar_v1
+  description: "CIFAR-100-LT IF100 native baselines: DDPM, CBDM, CCUA x seeds 0,1,2"
+  server_config: configs/server.yaml
+  paired_seeds: [0, 1, 2]
+  default_priority: 100
+  strict_preflight: true
+
+native_contract:
+  dataset: cifar100lt_if100
+  methods: [ddpm, cbdm, ccua]
+  seeds: [0, 1, 2]
+  train_updates: 300000
+  train_batch_size: 64
+  learning_rate: 0.0002
+  diffusion_steps: 1000
+  generated_images: 50000
+  guidance_scale: 1.5
+  sampler_family: ddim_100
+  adapter: ccua
+  repository: ccua
+
+repositories:
+  # Metric-only dependency for tools/evaluate_coral2025.py and the balanced
+  # CIFAR reference cache. No native task trains from this repository.
+  cbdm:
+    url: https://github.com/qym7/CBDM-pytorch.git
+    commit: 513f7fffe7369343499611a8f68212a8b40f11a1
+    directory: CBDM-pytorch
+  ccua:
+    url: https://github.com/C-Fun/Contrastive-Conditional-Unconditional-Alignment-for-Long-tailed-Diffusion-Model.git
+    commit: baff9def6cfd553d4452d10eab0bac66ec2727aa
+    directory: CCUA-DDPM
+
+native_train: &native_train
+  total_steps: 300000
+  inclusive_final_step: true
+  batch_size: 64
+  lr: 0.0002
+  warmup: 5000
+  T: 1000
+  beta_1: 0.0001
+  beta_T: 0.02
+  var_type: fixedlarge
+  dropout: 0.1
+  grad_clip: 1.0
+  num_workers: 4
+  save_step: 50000
+  sample_step: 100000
+  ch: 128
+  ch_mult: [1, 2, 2, 2]
+  attn: [1]
+  num_res_blocks: 2
+  ema_decay: 0.9999
+  conditional: true
+  cfg: true
+  amp: false
+
+native_eval: &native_eval
+  checkpoint_step: 300000
+  num_images: 50000
+  sample_batch_size: 64
+  guidance_scale: 1.5
+  sample_method: ddim
+  ddim_skip_step: 10
+  uniform_labels: true
+  sampler_family: ddim_100
+  metric_protocol: native_cifar_v1
+  paper_metrics: true
+  metrics_file: metrics.native.json
+  per_class_metrics_file: metrics.per_class.native.json
+  longtail_groups: cm_three_way
+  kid: true
+  kid_subsets: 100
+  kid_subset_size: 1000
+  kid_seed: 2026
+
+stages:
+  - name: c100_if100_core
+    adapter: ccua
+    dataset:
+      name: cifar100lt_if100
+      data_type: cifar100lt
+      imbalance_factor: 0.01
+      split_seed: 0
+      num_class: 100
+      img_size: 32
+      root: "${LTX_DATA_ROOT:-./data}"
+    train: *native_train
+    eval: *native_eval
+    methods:
+      - {name: ddpm, objective: ddpm}
+      - {name: cbdm, objective: cbdm, cb_tau: 1.0}
+      - {name: ccua, objective: ccua, ccua_al: 1.0, ccua_ucl: 1.0, brs: false}
+    seeds: [0, 1, 2]
+    tags: [native-cifar-v1, cifar100lt, if100, baseline]
+
+aggregation: {enabled: false}

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run the deferred ImageNet-LT 64x64 DDPM/CCUA setting.
 #
-# This is intentionally not part of run_server_c100.sh.  Set the gate explicitly
+# This is intentionally not part of the CIFAR launcher. Set the gate explicitly
 # to document why this expensive secondary cell is being launched:
 #   LTX_IMAGENET_LT_GATE=access          # on ACCESS
 #   LTX_IMAGENET_LT_GATE=main_complete   # after the CIFAR main table is full
@@ -22,7 +22,7 @@ case "$GATE" in
     echo "[run-imagenet-lt] ACCESS gate acknowledged"
     ;;
   main_complete)
-    python tools/check_campaign_complete.py --config configs/unified_cifar_c100.yaml
+    python tools/check_campaign_complete.py --config configs/native_cifar100_if100.yaml
     ;;
   *)
     echo "Set LTX_IMAGENET_LT_GATE=access on ACCESS or main_complete after the CIFAR main table is complete." >&2
@@ -30,7 +30,7 @@ case "$GATE" in
     ;;
 esac
 
-CAMPAIGN_NAME="secondary_imagenet_lt_v1"
+CAMPAIGN_NAME="secondary_imagenet_lt_t2h_v1"
 RUNS_ROOT="${LTX_RUNS_ROOT:-$ROOT/runs}"
 LOG_DIR="$RUNS_ROOT/$CAMPAIGN_NAME/logs"
 mkdir -p "$LOG_DIR"
@@ -51,7 +51,6 @@ if [[ "${WANDB_MODE:-online}" == "online" && -z "${WANDB_API_KEY:-}" ]]; then
   exit 2
 fi
 
-bash scripts/prepare_cm_metric_assets.sh
 python tools/validate_imagenet_lt.py \
   --image-root "$LTX_IMAGENET_ROOT" \
   --train-manifest "$LTX_IMAGENET_LT_TRAIN_MANIFEST" \

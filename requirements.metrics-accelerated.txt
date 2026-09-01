@@ -1,0 +1,4 @@
+# Optional exact GPU backend for VGG16 k-NN manifold radii.
+# Install with --no-deps on a CUDA/PyTorch-managed environment so pip does not
+# replace the host's torch or CUDA runtime.
+faiss-gpu==1.15.0

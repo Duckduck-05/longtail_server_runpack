@@ -1,8 +1,14 @@
-# Unified CIFAR-LT runpack
+# Long-tail CIFAR-LT runpack
 
 This private, standalone package produces one fair, report-ready baseline
-table. It does not call another checkout and does not concatenate incompatible
-paper tables.
+table. The main table now uses the pinned CCUA-DDPM U-Net runner for all three
+headline objectives (plain DDPM, CBDM, and CCUA), with the objective selected
+explicitly in the released CCUA codepath. This is the codepath used by CCUA's
+own CIFAR comparison and keeps the model, checkpoint schema, and official
+DDIM sampler identical across the three rows. Coral/CBDM trees remain vendored
+for audit and metric assets, but are not the main baseline runner. The
+T2H-unified host is retained only for explicitly named secondary/legacy runs
+and is not used to claim the main baseline result.
 
 On a CUDA server, run one command for the CIFAR-100-LT-only campaign (the
 current scope — CIFAR-10-LT comes later):
@@ -13,40 +19,46 @@ bash scripts/run_server_c100.sh
 
 It creates the pinned environment, loads the packaged `.env.local` W&B
 settings, downloads CIFAR-100 through `torchvision`, prepares the shared
-metric references, resumes safely when rerun, and launches all 27 CIFAR-100-LT
-tasks (DDPM, CBDM, T2H, CM, CORAL, CCUA, IP-SVT and its two ablation arms
-x seeds 0,1,2; `configs/unified_cifar_c100.yaml`).
+metric references, and launches the nine native baseline tasks
+(`configs/native_cifar100_if100.yaml`). Rerunning it resumes each native task
+from its own CCUA-DDPM checkpoint and never transfers a DDPM checkpoint into
+CBDM or CCUA.
+On Viettel AI it automatically places new run state/checkpoints under
+`/home/nvidia-lab/data_mount/longtail_server_runpack/runs` when no explicit
+`LTX_RUNS_ROOT` is set; this avoids the full project-home filesystem.
 
 ### Current execution priority
 
-For the first wave, run and validate only the three headline baselines across
-all paired seeds: `ddpm`, `cbdm`, and `ccua`, each at seeds `0`, `1`, and `2`
-(9 tasks total). This gives the baseline table and seed variance before any
-GPU time is spent on T2H, CM, CORAL, or the IP-SVT/ablation rows. The remaining
-18 tasks stay deferred until this first wave has completed training, sampling,
-and metrics successfully.
+Run and validate only the three headline baselines across all paired seeds:
+`ddpm`, `cbdm`, and `ccua`, each at seeds `0`, `1`, and `2` (9 tasks total).
+Temporarily pause CM, CORAL, T2H/unified, IP-SVT and its ablations. After the
+nine baseline rows are complete, start the native IP-SVT experiment using the
+same verified DDPM lineage; do not use a unified-host checkpoint as a native
+warm start.
 
-This is an operational queue priority, not a change to the locked 27-task
-fairness contract. Keep the same CIFAR-100-LT IF100 data, 300k-update budget,
-50k class-uniform samples, DDIM-100 sampler, and metric protocol for all
-methods when the deferred wave is started.
+The outer native contract is fixed at CIFAR-100-LT IF100, 300k updates, batch
+64, T=1000, 50k class-uniform samples, DDIM-100 at omega 1.5, and the shared
+metric evaluator. Only the repository/objective implementation changes.
+The CCUA paper's Table 7 reports a 200k-iteration reference, so this 300k
+campaign is an explicitly labeled outer-control run; a paper-number claim
+requires a separate 200k control with the same CCUA-DDPM sampler/evaluator.
+See the [CCUA paper](https://arxiv.org/abs/2507.09052).
 
 The ImageNet-LT experiment below is not part of that first wave. Before using
-it as a comparison, the complete CIFAR-100-LT main table must be filled: all
-27 rows in `configs/unified_cifar_c100.yaml` (including every seed and the
-remaining T2H/CM/CORAL/IP-SVT rows) must have `SUCCESS` and a collected FID.
+it as a comparison, all nine rows in `configs/native_cifar100_if100.yaml` must
+have `SUCCESS` and a collected FID.
 
-**DDPM evaluation cache.** The built-in Coral/DDPM evaluator must receive the
+**Shared evaluation cache.** The native evaluator must receive the
 absolute balanced-reference file
 `third_party/CBDM-pytorch/stats/cifar100.train.npz` (or its configured
-`LTX_METRICS_ROOT` equivalent). It no longer guesses `./stats/...` from the
+`LTX_METRICS_ROOT` equivalent). It never guesses `./stats/...` from the
 current working directory or silently selects another dataset's cache. The
-canonical adapter passes this path automatically; after an old eval failure,
-pull this runpack, rerun bootstrap/metric preparation, and rerun the failed
-task. An existing final checkpoint is reused, so this does not retrain it.
+native adapters pass this path automatically; after an old eval failure, rerun
+bootstrap/metric preparation and the failed task. An existing final
+checkpoint is reused, so this does not retrain it.
 
 **If you already have trained checkpoints, do not retrain.** Each task skips
-its training phase when the final checkpoint is already in place, so dropping
+its training phase when a valid namespaced checkpoint is already in place, so dropping
 checkpoints into the run directories turns the same command into an
 evaluation-only pass. See
 [Reusing checkpoints trained elsewhere](#reusing-checkpoints-trained-elsewhere).
@@ -59,10 +71,10 @@ target training batch ≈256, DDPM and CCUA, seed 0, checkpoint/update 300k.
 It reads the pinned ImageNet-LT train manifest rather than silently sampling a
 new imbalance from full ImageNet, generates 50k exact class-uniform samples,
 and reports ImageNet-LT FID/KID. The target batch is 256; the runner may retry
-at a smaller batch after an OOM and records the effective batch in W&B. The
-DDPM row uses CM's native OC/transfer-off ImageNet-LT route; the CCUA row uses
-the patched CCUA U-Net manifest loader, so the two objectives remain explicit
-in the run provenance.
+at a smaller batch after an OOM and records the effective batch in W&B.
+This secondary config remains an explicitly isolated T2H/OC_LT host run for
+now; it is not part of the CIFAR main claim and its DDPM/CCUA objective
+dispatch is recorded separately in the run provenance.
 
 Run this only on ACCESS (recommended because the licensed ImageNet payload is
 large) or after the main CIFAR table is complete. The explicit gate prevents
@@ -72,13 +84,13 @@ accidental mixing with the main campaign:
 # On ACCESS:
 LTX_IMAGENET_LT_GATE=access bash scripts/run_imagenet_lt_secondary.sh
 
-# After all 27 CIFAR-100-LT rows are complete:
+# After all 9 native CIFAR-100-LT baseline rows are complete:
 LTX_IMAGENET_LT_GATE=main_complete bash scripts/run_imagenet_lt_secondary.sh
 ```
 
-The launcher prepares the ImageNet files/manifests, applies the CM/CCUA
-manifest-loader patches, checks the main-table gate, and writes the secondary
-report to `runs/secondary_imagenet_lt_v1/report/`. Each method has its own
+The launcher prepares and validates the ImageNet files/manifests, checks the
+main-table gate, and writes the secondary report to
+`runs/secondary_imagenet_lt_t2h_v1/report/`. Each method has its own
 W&B run; the final comparison is also uploaded as a W&B table. Do not include
 these two rows in the CIFAR main-table claim or run them as a replacement for
 missing main-table rows.
@@ -97,17 +109,58 @@ or set `LTX_TASKS_PER_GPU` / `LTX_GPU_IDS` / `LTX_MAX_CONCURRENT` in
 `.env.local`. Dataloader workers per task are divided automatically so packed
 tasks don't oversubscribe the host's CPUs.
 
-Once CIFAR-10-LT is back in scope, `bash scripts/run_server.sh` runs the full
-54-task `configs/unified_cifar.yaml` campaign (all three cells) instead —
-same machine, same environment, no extra setup.
+The legacy full unified campaign can still be launched explicitly with
+`bash scripts/run_unified_cifar.sh`, but `run_server.sh` now follows the native
+baseline entrypoint and is not a shortcut to that archived 54-task table.
+
+## Main native-repository policy
+
+The main table keeps the objective implementations explicit while locking the
+outer protocol: dataset, budget, backbone shape, seed list, label schedule,
+sampler and evaluator. For this CCUA comparison, the released CCUA-DDPM U-Net
+runner is the common baseline host; its `ddpm`, `cbdm`, and `ccua` branches
+are separate objective settings, not a hidden unified research method.
+
+| Method | Runtime source |
+|---|---|
+| DDPM | `third_party/CCUA-DDPM/` with the explicit DDPM objective |
+| CBDM | `third_party/CCUA-DDPM/` with `--cbdm --cb_tau=1.0` |
+| CCUA | `third_party/CCUA-DDPM/` with its native alignment/UCL losses |
+| CM, CORAL, T2H/unified, IP-SVT | paused until the nine baseline rows finish |
+
+The CCUA runner is an explicit objective dispatcher, not an always-on CCUA
+loss. The three main rows resolve to `--nocbdm --ccua_al=0 --ccua_ucl=0`
+(DDPM), `--cbdm --cb_tau=1.0 --ccua_al=0 --ccua_ucl=0` (CBDM), and
+`--nocbdm --ccua_al=1 --ccua_ucl=1` (CCUA). All three then use the same
+`main.py --sample --sample_method=ddim --ddim_skip_step=10` evaluator path.
+
+The unified host and its checkpoints are not deleted while server jobs still
+reference them, but they are removed from the main launcher and table. A
+native checkpoint is never warm-started into another objective. The old server
+DDPM checkpoint is a Coral-schema checkpoint with extra projection heads, so it
+is retained as an audit artifact and deliberately not linked into the
+CCUA-DDPM campaign. A cross-repository weight transplant would not be an exact
+resume.
+
+When changing a native method, update its adapter/config, run the native
+preflight and focused tests, then launch through
+`scripts/run_server_c100.sh`. Do not call a vendored `main.py` directly: that
+bypasses the scheduler, checkpoint lineage and parent W&B run.
+
+The minimum gate for a new campaign is:
+
+```bash
+python -m ltx.cli preflight --config configs/native_cifar100_if100.yaml
+python -m pytest -q
+```
 
 ## What runs
 
-**Current scope — `scripts/run_server_c100.sh`:** 27 tasks, one cell.
+**Current scope — `scripts/run_server_c100.sh`:** 9 native baseline tasks, one cell.
 
 | Data | Methods | Shared controls |
 |---|---|---|
-| CIFAR-100-LT IF100 | DDPM, CBDM, T2H, CM, CORAL, CCUA, IP-SVT, `ipsvt_twin`, `ipsvt_clean` | 300k updates; batch 64; LR 2e-4; U-Net ch=128 [1,2,2,2] attn[1] 2 blocks; EMA 0.9999; T=1000; 50k exact class-uniform samples; DDIM-100 at omega 1.5 |
+| CIFAR-100-LT IF100 | DDPM, CBDM, CCUA × seeds 0,1,2 | CCUA-DDPM runner; 300k updates; batch 64; LR 2e-4; U-Net ch=128 [1,2,2,2] attn[1] 2 blocks; EMA 0.9999; T=1000; 50k exact class-uniform samples; official DDIM-100 at omega 1.5 |
 
 ### The three IP-SVT rows
 
@@ -138,12 +191,10 @@ reasons that have nothing to do with the mechanism; this row is what separates
 the two. It matches the auxiliary branch's *data*, not its FLOPs — exposure is
 the confound being removed, compute is not.
 
-All three run the DDPM row's own trainer with extra flags. They are not a
-fork: same data pipeline, same schedule, same sampler, same metric path, so a
-difference between them and `ddpm` is a difference of objective and nothing
-else. `--ipsvt` with `--amp` raises rather than silently skipping the auxiliary
-branch, because a run labelled IP-SVT that trained the baseline objective is
-worse than a crash.
+The IP-SVT rows are paused until the native baseline wave is complete. They
+must then run from the native DDPM/Coral lineage with an explicitly documented
+continuation or a fresh native run; a unified-host checkpoint cannot be used
+as a silent warm start.
 
 `lambda_SVT` is frozen at 1. A pilot at 20k fine-tuning updates cleared all
 four preregistered success criteria there, and at `lambda_SVT = 10` the same
@@ -152,10 +203,8 @@ dose-dependent trade-off, not a better setting waiting to be found. Sweeping it
 inside the headline comparison would be hyperparameter selection on the test
 table.
 
-**Full protocol — `scripts/run_server.sh`:** 54 tasks, all three cells (the
-same controls, plus CIFAR-10-LT IF100 and IF1000). This is the complete
-locked comparison `configs/unified_cifar.yaml` defines; run it once CIFAR-10-LT
-is back in scope.
+The older full unified protocol remains available only as a legacy/secondary
+experiment in `configs/unified_cifar.yaml`; it is not the current main table.
 
 `OC` is not an extra row: the official `OC_LT` repository calls its method
 T2H. Running both names would double-count the same method.
@@ -166,29 +215,11 @@ smaller shared budget would run CBDM and CM below their own papers' design
 point while running CORAL above its — undertraining two baselines is a
 fairness violation in a way that a uniform surplus is not.
 
-**Why DDIM-100 at omega 1.5.** Every row must reach the *same* sampler,
-otherwise the table compares samplers as much as methods. Which sampler is a
-protocol choice, and this campaign uses 100 DDIM steps.
-
-That choice follows what the papers actually run. `OC_LT`'s published sampling
-command passes `--w 1.5` and leaves `ddim_skip_step` at its default of 10
-(= 100 steps); `CCUA` defaults the same way; `ImbDiff-CM`'s own
-`configs/cifar100lt_ir100/cm.yaml` uses `omega: 1.5` with `ddim_skip_step: 20`
-(= 50 steps). 100 is the majority default, and the extra cost over 50 is
-immaterial next to training.
-
-The campaign previously normalised onto the 1000-step ancestral chain, which is
-twenty times what any of these papers run and cost ~14 h of sampling per task.
-`coral-lt-diffusion` had no DDIM path at all, which is why that was the only
-sampler every repository could reach; `patches/apply_coral_ddim.py` adds one,
-copying CBDM's `forward_ddim` update rule so both repositories run the same
-sampler rather than two implementations that share a name. Measured on this
-box, 200 images: 410 s ancestral vs 75 s at DDIM-100.
-
-The repositories spell the setting two ways — `cm`/`oc`/`ccua` take a skip
-factor, the coral-family trainer takes a step count — so a config can satisfy
-one and silently break the other. Preflight resolves both spellings against
-`fairness_contract.sampler_family` and fails closed on a mismatch.
+**Why DDIM-100 at omega 1.5.** Every main-table row uses CCUA-DDPM's official
+`sample_method=ddim` plus `ddim_skip_step=10` with T=1000. This fixes the
+100-step grid and avoids comparing Coral's custom `[999,...,0]` schedule to
+CCUA's official `[990,...,0]` schedule. Native preflight fails closed if this
+sampler contract drifts.
 
 The source paper for each row is indexed in [papers/README.md](papers/README.md)
 and fetched by `bash papers/fetch_papers.sh`.
@@ -197,8 +228,8 @@ Every completed row uses the same balanced CIFAR reference and reports FID,
 KID, IS, F₈, F₁⁄₈, improved-PRD precision, and improved-PRD recall. It also
 writes a separate per-class and Many/Medium/Few FID breakdown with its exact
 sample counts. The resulting reports are written under
-`runs/<campaign name>/report/` — `unified_cifar_c100_v1` for the current
-CIFAR-100-LT-only run, `unified_cifar_v1` for the full campaign:
+`runs/<campaign name>/report/` — `native_cifar100_if100_v1` for the current
+source-native CIFAR-100-LT baseline campaign:
 
 ```text
 runs/<campaign>/report/table.md
@@ -211,6 +242,11 @@ runs/<campaign>/report/campaign_run.log  # snapshot of the whole-campaign stdout
 runs/<campaign>/latest.log               # live stdout of the most recent run (symlink, updates every launch)
 ```
 
+For the native campaign, the report currently publishes `per_seed.csv`,
+`summary.json` and `results.log`; the per-class aggregate remains in
+`summary.json`. The report run also uploads these files and per-run metrics to
+W&B so the remote operator does not need to copy logs manually.
+
 The same per-seed and aggregate tables plus all task losses, samples, system
 metrics, resolved commands, and artifacts are uploaded to the configured W&B
 project. A missing seed or metric makes the report fail rather than silently
@@ -221,10 +257,10 @@ by default. This changes only how inference is split into GPU batches, not the
 50k samples or any metric formula. Override `inception_batch_size` in the
 campaign's `eval` block if the server has a different memory budget.
 
-Given the `WANDB_API_KEY` in `.env.local`, the runner (via `--wandb`, which
-both `run_server_c100.sh` and `run_server.sh` always pass) authenticates once
-at bootstrap, flips the project to public-read, and publishes a W&B Report
-combining the main table, the tail breakdown, and per-run comparison panels.
+Given the `WANDB_API_KEY` in `.env.local`, the runner authenticates once at
+bootstrap and each worker publishes its final native metrics to the configured
+W&B project. The native report is best-effort W&B upload plus a fail-closed
+local table; missing logging never turns a missing metric into a valid result.
 The report URL is printed at the end of the run and recorded in
 `results.log` and `summary.json`.
 
@@ -237,51 +273,50 @@ non-zero, so it cannot be mistaken for a successful W&B hand-off.
 
 ## Reusing checkpoints trained elsewhere
 
-Training is ~95% of a task's cost, so a checkpoint trained on another box
-should never be retrained here. Every phase declares its outputs and is skipped
-when they exist, and the train phase's output is the final checkpoint. A final
-checkpoint in the expected run directory makes the same launch command run
-evaluation only.
+Training is ~95% of a task's cost, but a checkpoint is reusable here only when
+its native provenance matches the selected method, seed, repository commit and
+outer protocol. Every phase declares its outputs and is skipped when they
+exist; otherwise the native adapter starts fresh or resumes from the latest
+checkpoint in that same task directory.
 
 The path is derived from the campaign name, stage, method and seed:
 
 ```text
-runs/unified_cifar_c100_v1/<stage>/<method>/seed_<n>/ckpt_300000.pt
+runs/native_cifar100_if100_v1/<stage>/<method>/seed_<n>/ckpt_300000.pt
 ```
 
 ```bash
 # where every task expects its checkpoint, printed rather than guessed
 python - <<'EOF'
 from ltx.config import load_campaign
-for t in sorted(load_campaign("configs/unified_cifar_c100.yaml").tasks,
+for t in sorted(load_campaign("configs/native_cifar100_if100.yaml").tasks,
                 key=lambda x: (x.method, x.seed)):
     print(f"{t.method:12s} seed {t.seed}  {t.run_dir}/ckpt_{t.train['total_steps']}.pt")
 EOF
 ```
 
-Stages are `c100_if100_core` for `ddpm`/`cbdm`/`coral`/`ipsvt*`,
-`c100_if100_t2h` for `t2h`, `c100_if100_cm` for `cm`, and `c100_if100_ccua`
-for `ccua`.
+The native baseline stage is `c100_if100_core`; each method/seed has its own
+subdirectory under that stage and uses the CCUA-DDPM adapter.
 
-For an intermediate checkpoint from another run, use an explicit resume
-override. The path must be the checkpoint for the selected method/seed; a
-single legacy `ema_model` checkpoint is a warm start, not an exact continuation:
+For an intermediate CCUA-DDPM checkpoint from another run, use an explicit
+resume override only for the same method, seed, architecture and repository
+commit. A
+checkpoint from unified T2H, another objective, or another seed is not an
+exact continuation and must not be supplied:
 
 ```bash
-python -m ltx.cli run --config configs/unified_cifar_c100.yaml \
+python -m ltx.cli run --config configs/native_cifar100_if100.yaml \
   --resume-method ddpm --resume-seed 0 \
   --resume-checkpoint /path/to/ckpt_200000.pt \
-  --resume-step 200000 --resume-mode ema_only
+  --resume-step 200000 --resume-mode full
 ```
 
-For per-seed files, use `{seed}` in the path and omit `--resume-seed`. A full
-native checkpoint can use `--resume-mode full`; Coral then restores its model,
-EMA, optimizer and scheduler state. The default is always fresh task
-configuration plus automatic resume only from a checkpoint already inside
-that task's own run directory. No checkpoint is inferred from another
-campaign, and an EMA-only file is rejected unless `ema_only` is chosen
-explicitly. The selected resume provenance is saved in `task.resolved.json`,
-`RESUME_SOURCE.json` and W&B config.
+For per-seed files, use `{seed}` in the path and omit `--resume-seed`. The
+default is always fresh task configuration plus automatic resume only from a
+checkpoint already inside that task's own run directory. No checkpoint is
+inferred from another campaign. The selected resume provenance is saved in
+`task.resolved.json`, `RESUME_SOURCE.json` and W&B config where the native
+trainer exposes it.
 
 Do not run a copied `/tmp/*.sh` or vendored `main.py` directly on the server:
 that bypasses the scheduler/state database and the parent W&B run (the child
@@ -290,7 +325,13 @@ on the server and run `scripts/run_server_c100.sh`; with online mode it now
 fails early if W&B credentials are missing instead of completing with no
 online results.
 
-Two things to check before trusting a transplanted checkpoint:
+The old server result
+`runs/unified_cifar_c100_v1/c100_if100_core/ddpm/seed_0/ckpt_300000.pt` remains
+available for audit, but is not linked: its Coral projection-head schema is
+not an exact CCUA-DDPM checkpoint. The new DDPM, CBDM, and CCUA rows therefore
+start from their own CCUA-DDPM checkpoints.
+
+Two things to check before trusting any other transplanted checkpoint:
 
 **It must be the same architecture and class count.** A CIFAR-10 checkpoint
 loaded into a 100-class model fails with `size mismatch for
@@ -299,56 +340,45 @@ trained with a different `ch`/`ch_mult`/`num_res_blocks` may load and silently
 evaluate a different model than the table claims, so confirm it was trained
 under this protocol's backbone.
 
-**It must have been trained by the same method.** Nothing in a `.pt` file
-records which objective produced it. Dropping a DDPM checkpoint into
-`ipsvt/seed_0/` produces a row labelled IP-SVT that is really DDPM, and no
-check in this package will catch it. The `flagfile.txt` written next to each
-checkpoint by its own training run is the only provenance there is — copy it
-across with the checkpoint.
+**It must have been trained by the same method.** Native `ckpt_<step>.pt`
+files are not self-authenticating across repositories. Confirm `task.json`,
+`provenance.json`, repository commit, data split, model signature and seed
+before linking one. A DDPM checkpoint cannot silently become a CBDM, CCUA or
+IP-SVT row.
 
 A task whose checkpoint is present still runs sampling and metrics, so the
-campaign cost collapses to ~1.4 h per task instead of ~20 h.
+campaign cost collapses to evaluation time instead of retraining.
 
 ## Operating a run in progress
 
 Rerunning `bash scripts/run_server_c100.sh` is always the right command: it
 re-bootstraps (which is idempotent), recovers tasks whose worker died, and
-resumes each one from its newest checkpoint. Three things are worth knowing
+resumes each one from its latest native checkpoint. Three things are worth knowing
 before you stop or restart a campaign.
 
-**Stopping.** `python -m ltx.cli stop --config configs/unified_cifar_c100.yaml`
+**Stopping.** `python -m ltx.cli stop --config configs/native_cifar100_if100.yaml`
 SIGTERMs every running worker's process group. The next `run_server_c100.sh`
 picks those tasks back up automatically (they are marked `retry`, not
-`failed`) and resumes training from the last checkpoint. Checkpoints are
-written every 50k updates and only the newest is kept, so a stop costs up to
-50k updates (~5 h at 2.6 it/s) of whatever was training at the time. If you
-expect to stop and restart repeatedly, lower `save_step` in
-`configs/unified_cifar_c100.yaml` first — only one checkpoint is retained
-either way, so it costs no extra disk.
+`failed`) and resumes training from the last native checkpoint. Checkpoints
+are written every 50k updates, so a stop costs at most that resume interval.
+If disk pressure matters, lower `save_step` in
+`configs/native_cifar100_if100.yaml` before launching.
 
 **Failed tasks are not resumed.** A task that ended in `failed` stays failed;
 `run` only picks up `pending`/`retry`. Requeue explicitly, then run again:
 
 ```bash
-python -m ltx.cli retry-failed --config configs/unified_cifar_c100.yaml
+python -m ltx.cli retry-failed --config configs/native_cifar100_if100.yaml
 bash scripts/run_server_c100.sh
 ```
 
-A requeued task skips any phase whose outputs already exist, so a T2H task
-that trained to `ckpt_300000.pt` and died in eval re-runs eval and metrics
-only — it does not retrain.
+A requeued native task skips its training phase when `ckpt_300000.pt` exists,
+then reruns only missing sampling/metrics phases. A failure in evaluation does
+not retrain the completed model.
 
-**T2H/OC eval and `torch.compile`.** `OC_LT/main.py` wraps the U-Net in
-`torch.compile`, so every key in the saved `net_model` carries an
-`_orig_mod.` prefix, while `ddpm_gen.py` builds a plain `UNet`. Loading one
-into the other raises `RuntimeError: Error(s) in loading state_dict for UNet`
-and kills the eval phase *after* training has already been paid for.
-`patches/apply_oc_compiled_ckpt.py` strips the prefix on the eval path, the
-same way upstream already strips it in `ema()`; `scripts/bootstrap.sh` applies
-it, so simply rerunning the launch script installs the fix. Preflight now
-fails closed when the marker `third_party/OC_LT/.ltx_oc_compiled_ckpt_patch_v1`
-is missing, rather than letting a campaign burn 300k updates into an eval that
-cannot load its own checkpoint.
+**Unified-host jobs.** Existing T2H-unified jobs are kept alive for provenance
+and are not promoted into the main table. They can finish separately; their
+checkpoints are never loaded by native baseline adapters.
 
 `configs/smoke_t2h.yaml` proves that path on a real GPU in about two minutes —
 a 20-step train, then the production DDIM eval on a coarse stride:
@@ -379,13 +409,13 @@ phase reports how many redraws it suppressed.
 What this campaign is and is not, so the numbers are not asked to carry more
 than they can.
 
-**One cell, three seeds.** CIFAR-100-LT at IF100, seeds 0/1/2 for every row.
-CIFAR-10-LT IF100 and IF1000 exist in `configs/unified_cifar.yaml` and are the
-natural second cell; a second cell is what turns "IP-SVT helps here" into "IP-SVT
-helps", so it is the first thing to add when compute allows.
+**One cell, three seeds.** The current native main table is CIFAR-100-LT at
+IF100, seeds 0/1/2 for DDPM/CBDM/CCUA. CIFAR-10-LT IF100 and IF1000 remain in
+the archived unified protocol and can return only after the native main table
+and native IP-SVT result are settled.
 
 **ImageNet-LT is deferred, not part of the main table.** The optional
-64×64 setting above runs only on ACCESS or after all 27 CIFAR-100-LT main-table
+64×64 setting above runs only on ACCESS or after all 9 native CIFAR-100-LT main-table
 rows are complete. It is a two-row baseline extension (DDPM/CCUA, seed 0),
 not a substitute for missing CIFAR seeds and not evidence for a main-table
 claim. **No paper in this group evaluates generation on iNaturalist or
@@ -394,10 +424,9 @@ them would not answer a question the field is asking.
 
 **Cost.** Measured on one H100: ~12 h (idle GPU) to ~36 h (contended) for 300k
 updates, ~1.4 h to sample 50k images at DDIM-100, ~15 min for metrics. Call it
-~20 h per task, so 27 tasks is roughly three weeks of exclusive GPU time. The
-baselines are 18 of those 27 and are reusable across every future IP-SVT
-change, which is why transplanting them rather than retraining is worth the
-care documented above.
+~20 h per task. The nine baseline checkpoints are reusable across future
+native IP-SVT changes, which is why transplanting them rather than retraining
+is worth the care documented above.
 
 **Seeds are the cheapest thing to cut, and the wrong thing to cut first.** Most
 papers in this area report a single seed. If the budget forces a reduction,

@@ -54,7 +54,7 @@ def test_every_method_samples_with_the_same_number_of_ddim_steps():
     seen = set()
     for task in campaign.tasks:
         T = int(task.train["T"])
-        if task.adapter in {"cm", "oc", "ccua"}:
+        if task.adapter in {"cm", "oc", "ccua", "t2h_unified"}:
             assert task.eval["sample_method"] == "ddim", task.method
             skip = int(task.eval["ddim_skip_step"])
             steps = T // skip
@@ -110,18 +110,18 @@ def test_ipsvt_arms_pin_the_frozen_lambda_and_their_own_mode():
     assert modes == {"ipsvt": "full", "ipsvt_twin": "twin", "ipsvt_clean": "clean"}
 
 
-def test_coral_adapter_passes_the_step_count_through_to_the_trainer():
+def test_t2h_unified_adapter_passes_the_step_count_through_to_the_host():
     """A config value nothing forwards is a setting that does not exist."""
-    from ltx.adapters.coral import CoralAdapter
+    from ltx.adapters.t2h_unified import T2HUnifiedAdapter
 
     campaign = _campaign()
     task = next(t for t in campaign.tasks if t.method == "ipsvt" and t.seed == 0)
-    phases = CoralAdapter(ROOT).phases(task)
-    evals = [p for p in phases if p.name.startswith("eval_")]
+    phases = T2HUnifiedAdapter(ROOT).phases(task)
+    evals = [p for p in phases if p.name.startswith("sample")]
     assert evals, [p.name for p in phases]
     for phase in evals:
         cmd = " ".join(str(c) for c in phase.command)
-        assert "--ddim_steps=100" in cmd, cmd
+        assert "--ddim_skip_step=10" in cmd, cmd
         assert "--omega=1.5" in cmd, cmd
     train = " ".join(str(c) for c in next(p for p in phases if p.name == "train").command)
     assert "--ipsvt" in train and "--ipsvt_mode=full" in train
@@ -140,7 +140,7 @@ def test_preflight_accepts_the_campaign():
 def test_preflight_rejects_a_method_left_on_the_old_sampler():
     """The check must actually bite -- a silent pass would be worse than none."""
     campaign = _campaign()
-    victim = next(t for t in campaign.tasks if t.adapter == "cm")
+    victim = next(t for t in campaign.tasks if t.method == "cm")
     victim.eval["ddim_skip_step"] = 1
     checks = run_preflight(campaign)
     controls = [c for c in checks if c.name == "unified-controls"]

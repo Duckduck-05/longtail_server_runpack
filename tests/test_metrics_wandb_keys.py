@@ -22,6 +22,19 @@ def test_unified_metrics_json_unwraps_to_clean_keys(tmp_path):
     assert not any("protocol" in k or "label_histogram" in k for k in out)
 
 
+def test_v2_host_ignores_legacy_metric_files(tmp_path):
+    (tmp_path / "unified_host.json").write_text(json.dumps({
+        "host_revision": "t2h-unified-common-v2", "checkpoint_schema": 2,
+    }))
+    (tmp_path / "metrics.unified.v2.json").write_text(json.dumps({
+        "metrics": {"FID": 12.3},
+    }))
+    (tmp_path / "metrics.unified.json").write_text(json.dumps({
+        "metrics": {"FID": 99.0},
+    }))
+    assert collect_metrics(tmp_path)["generation/FID"] == 12.3
+
+
 def test_per_class_metrics_keeps_only_the_tail_summary(tmp_path):
     """metrics.per_class.json carries a 100-entry per_class breakdown plus a
     Many/Medium/Few groups summary. Only the groups summary is useful in a

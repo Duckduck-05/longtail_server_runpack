@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import math
+import os
 import re
 import shlex
 from pathlib import Path
 from typing import List
 
 from .base import Adapter, Phase, resolve_inception_batch_size, resolve_num_workers
+from ..checkpoints import get_resume_spec, get_resume_step
 from ..config import Task
 
 
@@ -21,9 +24,11 @@ class CCUAAdapter(Adapter):
     manifest loader; this is important because the released ImageFolder path
     would otherwise train on all of ImageNet instead of the published LT split.
 
-    The same adapter can express the plain DDPM objective by setting
-    ``objective=ddpm`` (or explicit CCUA weights of zero) while retaining the
-    CCUA U-Net/data/checkpoint plumbing.
+    The same adapter can express the plain DDPM and CBDM objectives by setting
+    ``objective=ddpm`` or ``objective=cbdm`` while retaining the CCUA
+    U-Net/data/checkpoint plumbing.  Objective switches are translated to the
+    flags understood by this repository, so a native campaign cannot
+    accidentally send the Coral-family ``--cb``/``--tau`` flags to CCUA.
 
     Sampling goes through ``main.py --sample`` rather than upstream
     ``evaluate.py``: the latter imports CCUA's own FLD/CLIP/DINOv2 metric stack
@@ -35,13 +40,13 @@ class CCUAAdapter(Adapter):
     name = "ccua"
 
     @staticmethod
-    def latest(run_dir: Path, target: int) -> int:
+    def latest(run_dir: Path, target: int) -> int | None:
         values = []
         for p in run_dir.glob("ckpt_*.pt"):
             m = re.fullmatch(r"ckpt_(\d+)\.pt", p.name)
             if m and int(m.group(1)) < target:
                 values.append(int(m.group(1)))
-        return max(values, default=0)
+        return max(values) if values else None
 
     def _backbone_flags(self, train: dict) -> List[str]:
         """Pin the architecture explicitly instead of trusting flag defaults to
@@ -68,17 +73,43 @@ class CCUAAdapter(Adapter):
         num_class = task.dataset.get("num_class", task.dataset.get("num_classes", 100))
         img_size = task.dataset.get("img_size", 32)
         data_root = task.dataset.get("root", task.runtime.get("data_root", "./data"))
+        metrics_root = Path(os.environ.get(
+            "LTX_METRICS_ROOT",
+            str(Path(task.runtime["repos_root"]) / "CBDM-pytorch" / "stats"),
+        )).expanduser()
+        if not metrics_root.is_absolute():
+            metrics_root = (Path(task.runtime["repos_root"]).parent / metrics_root).resolve()
 
         method_cfg = task.method_config
         # Upstream's only U-Net-pipeline script sets both weights to 1.0; the
         # paper's alpha=gamma=0.05 is tuned for the DiT/SiT ImageNet pipeline,
         # whose latent-space loss scales are not comparable. Overridable per
-        # method in the campaign YAML.
+        # method in the campaign YAML, but forced to zero for sibling
+        # objectives so their objective identity cannot drift with defaults.
         objective = str(method_cfg.get("objective", task.method)).lower()
-        if objective not in {"ddpm", "ccua"}:
-            raise ValueError(f"CCUA U-Net adapter supports objective=ddpm or ccua, got {objective!r}")
-        ccua_al = method_cfg.get("ccua_al", 0.0 if objective == "ddpm" else 1.0)
-        ccua_ucl = method_cfg.get("ccua_ucl", 0.0 if objective == "ddpm" else 1.0)
+        if objective not in {"ddpm", "cbdm", "ccua"}:
+            raise ValueError(
+                "CCUA U-Net adapter supports objective=ddpm, cbdm, or ccua, "
+                f"got {objective!r}"
+            )
+        if objective == "cbdm":
+            cb_tau = float(method_cfg.get("cb_tau", method_cfg.get("tau", 1.0)))
+            if not math.isfinite(cb_tau) or cb_tau <= 0:
+                raise ValueError(f"CCUA CBDM objective requires cb_tau > 0, got {cb_tau}")
+            objective_flags = [
+                "--cbdm", f"--cb_tau={cb_tau}",
+                "--ccua_al=0.0", "--ccua_ucl=0.0",
+            ]
+        elif objective == "ddpm":
+            objective_flags = [
+                "--nocbdm", "--ccua_al=0.0", "--ccua_ucl=0.0",
+            ]
+        else:
+            ccua_al = method_cfg.get("ccua_al", 1.0)
+            ccua_ucl = method_cfg.get("ccua_ucl", 1.0)
+            objective_flags = [
+                "--nocbdm", f"--ccua_al={ccua_al}", f"--ccua_ucl={ccua_ucl}",
+            ]
 
         train_cmd = [
             py, "main.py", "--train",
@@ -88,17 +119,17 @@ class CCUAAdapter(Adapter):
             f"--num_class={num_class}", f"--img_size={img_size}",
             f"--logdir={run_dir}", f"--seed={task.seed}",
             f"--batch_size={batch}", f"--lr={train.get('lr', 2e-4)}",
-            f"--T={train.get('T', 1000)}", f"--dropout={train.get('dropout', 0.1)}",
+            f"--T={train.get('T', 1000)}",
+            f"--beta_1={train.get('beta_1', 1e-4)}",
+            f"--beta_T={train.get('beta_T', 0.02)}",
+            f"--var_type={train.get('var_type', 'fixedlarge')}",
+            f"--dropout={train.get('dropout', 0.1)}",
+            f"--grad_clip={train.get('grad_clip', 1.0)}",
             f"--warmup={train.get('warmup', 5000)}",
             f"--save_step={train.get('save_step', 50000)}",
             f"--sample_step={train.get('sample_step', 100000)}",
             f"--num_workers={resolve_num_workers(train, 4)}",
             "--conditional", "--cfg",
-            # CCUA is the alignment/contrastive pair alone. Naming the two
-            # sibling objectives off explicitly means a changed upstream default
-            # cannot silently turn this row into CBDM or T2H.
-            "--nocbdm", "--notransfer_x0",
-            f"--ccua_al={ccua_al}", f"--ccua_ucl={ccua_ucl}",
         ]
         if task.dataset.get("data_type") == "imagenet_lt":
             manifest = str(task.dataset.get("manifest", "")).strip()
@@ -112,15 +143,40 @@ class CCUAAdapter(Adapter):
         if method_cfg.get("brs", False):
             train_cmd += ["--brs", f"--brs_factor={method_cfg.get('brs_factor', 0.1)}"]
         train_cmd += list(map(str, method_cfg.get("flags", [])))
+        # Transfer is a separate long-tail method and is disabled for all
+        # three native objectives.  Keep these objective switches after any
+        # optional flags so a campaign cannot re-enable a sibling loss by
+        # accident.
+        train_cmd += ["--notransfer_x0", *objective_flags]
 
         # Upstream always iterates range(0, total_steps) and names checkpoints
         # step + ckpt_step, so a resume must be given the *remaining* budget or
-        # it would train the full budget a second time.
-        latest = self.latest(run_dir, target)
-        remaining = (target - latest if latest else target) + 1
+        # it would train the full budget a second time.  An explicit external
+        # checkpoint is allowed only as a full-state CCUA-DDPM checkpoint; an
+        # EMA-only Coral/unified transplant is rejected rather than silently
+        # becoming a fresh optimizer run.
+        explicit_resume, resume_mode = get_resume_spec(train, method_cfg)
+        if explicit_resume is not None:
+            if resume_mode != "full":
+                raise ValueError(
+                    "CCUA-DDPM supports only full-state external resume; "
+                    "EMA-only warm starts are not exact for this runner"
+                )
+            resume_step = get_resume_step(train, method_cfg, explicit_resume)
+            if resume_step >= target:
+                raise ValueError(
+                    f"explicit resume checkpoint step {resume_step} must be below "
+                    f"target checkpoint step {target}: {explicit_resume}"
+                )
+            latest = resume_step
+            resume_dir = explicit_resume.parent
+        else:
+            latest = self.latest(run_dir, target)
+            resume_dir = run_dir
+        remaining = (target - latest if latest is not None else target) + 1
         train_cmd.append(f"--total_steps={remaining}")
-        if latest:
-            train_cmd += ["--resume", f"--resume_dir={run_dir}", f"--ckpt_step={latest}"]
+        if latest is not None:
+            train_cmd += ["--resume", f"--resume_dir={resume_dir}", f"--ckpt_step={latest}"]
         phases = [Phase("train", train_cmd, repo, skip_if_exists=[run_dir / f"ckpt_{target}.pt"])]
 
         # One trained checkpoint can be sampled at several guidance strengths:
@@ -148,6 +204,9 @@ class CCUAAdapter(Adapter):
                 f"--sample_method={evaluate.get('sample_method', 'ddpm')}",
                 f"--ddim_skip_step={evaluate.get('ddim_skip_step', 1)}",
                 f"--omega={omega}", f"--T={train.get('T', 1000)}",
+                f"--beta_1={train.get('beta_1', 1e-4)}",
+                f"--beta_T={train.get('beta_T', 0.02)}",
+                f"--var_type={train.get('var_type', 'fixedlarge')}",
                 f"--dropout={train.get('dropout', 0.1)}",
                 "--conditional", f"--sample_output={samples}",
             ]
@@ -199,7 +258,7 @@ class CCUAAdapter(Adapter):
                 "--repo", str(Path(task.runtime["repos_root"]) / "CBDM-pytorch"),
                 "--data-type", str(task.dataset["data_type"]),
                 "--samples", str(samples), "--labels", str(labels),
-                "--metrics-root", str(Path(task.runtime["repos_root"]) / "CBDM-pytorch" / "stats"),
+                "--metrics-root", str(metrics_root),
                 "--output", str(run_dir / metrics_file),
                 "--inception-batch-size", str(inception_batch),
             ]

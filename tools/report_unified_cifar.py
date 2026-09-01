@@ -36,6 +36,9 @@ BASELINE_METHOD = "ddpm"
 # (ICLR 2026, Tab. 2). The remaining metrics still get a full bootstrap CI in
 # summary.json — a 7-metric grid on screen is noise, not evidence.
 HEADLINE_METRICS = ("FID", "KID", "IS", "Recall")
+COMMON_HOST_REVISION = "t2h-unified-common-v2"
+COMMON_CHECKPOINT_SCHEMA = 2
+COMMON_ARTIFACT_NAMESPACE = "t2h_unified_v2"
 DISPLAY = {
     "FID": "FID ↓", "KID": "KID ↓", "IS": "IS ↑", "F_8": "F₈ ↑", "F_1_8": "F₁⁄₈ ↑",
     "ImprovedPrecision": "IPR precision ↑", "Recall": "IPR recall ↑",
@@ -50,12 +53,51 @@ def finite(value: Any) -> float | None:
         return None
 
 
-def read_metrics(run_dir: Path) -> dict[str, float]:
-    for filename in ("metrics.unified.json", "metrics.paper.json", "metrics.collected.json"):
+def _valid_common_metric_payload(payload: Any) -> bool:
+    provenance = payload.get("provenance") if isinstance(payload, dict) else None
+    if not isinstance(provenance, dict):
+        return False
+    if provenance.get("metric_host") != "common_cifar_metrics_v2":
+        return False
+    sample = provenance.get("sample")
+    valid_identity = (
+        isinstance(sample, dict)
+        and sample.get("host_revision") == COMMON_HOST_REVISION
+        and sample.get("checkpoint_schema") == COMMON_CHECKPOINT_SCHEMA
+        and sample.get("artifact_namespace") == COMMON_ARTIFACT_NAMESPACE
+    )
+    if not valid_identity:
+        return False
+    metrics = payload.get("metrics") if isinstance(payload, dict) else None
+    if isinstance(metrics, dict):
+        # Do not let the evaluator's early headline snapshot become a
+        # paper-facing final row.  The detailed common protocol includes the
+        # VGG16 improved-PRD pair as well as the fast Inception metrics.
+        return {
+            "FID", "KID", "IS", "F_8", "F_1_8",
+            "ImprovedPrecision", "Recall",
+        }.issubset(metrics)
+    groups = payload.get("groups") if isinstance(payload, dict) else None
+    return isinstance(groups, dict) and {"Many", "Medium", "Few"}.issubset(groups)
+
+
+def read_metrics(run_dir: Path, configured_filename: str = "") -> dict[str, float]:
+    # A configured filename is a protocol decision.  Once present, falling
+    # back to a legacy file would recreate the exact mixed-evaluator bug this
+    # report is meant to prevent.
+    filenames = ([configured_filename] if configured_filename else
+                 ["metrics.unified.json", "metrics.paper.json", "metrics.collected.json"])
+    seen = set()
+    for filename in filenames:
+        if not filename or filename in seen:
+            continue
+        seen.add(filename)
         path = run_dir / filename
         if not path.is_file():
             continue
         payload = json.loads(path.read_text(encoding="utf-8"))
+        if configured_filename and configured_filename.endswith(".v2.json") and not _valid_common_metric_payload(payload):
+            return {}
         values = payload.get("metrics", payload)
         parsed = {metric: finite(values.get(metric, values.get(f"generation/{metric}"))) for metric in METRICS}
         return {metric: value for metric, value in parsed.items() if value is not None}
@@ -69,6 +111,8 @@ def read_tail_breakdown(run_dir: Path, filename: str) -> dict[str, dict[str, Any
         return {}
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
+        if filename.endswith(".v2.json") and not _valid_common_metric_payload(payload):
+            return {}
         groups = payload.get("groups", {})
         return {str(name): value for name, value in groups.items()
                 if isinstance(value, dict) and finite(value.get("FID")) is not None}
@@ -253,7 +297,7 @@ def main() -> int:
     tail_rows: list[dict[str, Any]] = []
     for task in campaign.tasks:
         run_dir = Path(task.run_dir)
-        metrics = read_metrics(run_dir)
+        metrics = read_metrics(run_dir, str(task.eval.get("metrics_file", "")).strip())
         tail_filename = str(task.eval.get("per_class_metrics_file", "")).strip()
         tail = read_tail_breakdown(run_dir, tail_filename) if tail_filename else {}
         tail_complete = not tail_filename or set(tail) == {"Many", "Medium", "Few"}
@@ -351,7 +395,7 @@ def main() -> int:
         clone["seed_values"] = {metric: dict(values) for metric, values in item["seed_values"].items()}
         serializable.append(clone)
     payload = {
-        "protocol": "unified_cifar_v1",
+        "protocol": campaign.raw["campaign"].get("protocol", "unified_cifar_v1"),
         "claim_status": "UNIFIED_BASELINE_TABLE_NOT_A_PAPER_REPRODUCTION",
         "metric_definitions": {
             "FID": "balanced CIFAR-train Inception reference; lower is better",
@@ -373,7 +417,7 @@ def main() -> int:
         "# Unified CIFAR-LT baseline table",
         "",
         "This is a single new controlled protocol, not a combination or reproduction of paper tables.",
-        "Every cell requires seeds 0/1/2, 200k updates, 50k exact class-uniform generated labels, and the same evaluator.",
+        "Every cell requires seeds 0/1/2, 300k updates, 50k exact class-uniform generated labels, and the same evaluator.",
         "Each value is mean ± sample standard deviation across the three training seeds. Missing inputs remain `MISSING`.",
         "",
         "| Data | Method | Seeds | FID ↓ | KID ↓ | IS ↑ | F₈ ↑ | F₁⁄₈ ↑ | IPR precision ↑ | IPR recall ↑ | FID rank |",

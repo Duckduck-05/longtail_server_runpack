@@ -4,9 +4,9 @@ machine:
   min_free_gpu_memory_gb: 0
   poll_seconds: 20
   heartbeat_seconds: 30
-  # Only the newest checkpoint is kept per run (~0.6 GB) plus its 50k sample
-  # array (~0.6 GB), so the campaign needs roughly 55 GB. Pause launching
-  # rather than fill the disk and lose a run mid-training; 0 disables.
+  # Native campaigns keep each 50k checkpoint (~0.6 GB) plus their 50k sample
+  # array for lineage/resume auditing. Pause launching rather than fill the
+  # disk and lose a run mid-training; 0 disables.
   disk_stop_free_gb: 20
   shutdown_grace_seconds: 45
   # How many tasks may share one GPU. "auto" divides each GPU's free memory

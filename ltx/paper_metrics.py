@@ -12,6 +12,8 @@ comparable across independently launched method jobs.
 """
 from __future__ import annotations
 
+import os
+import warnings
 from pathlib import Path
 from typing import Iterable
 
@@ -64,7 +66,7 @@ def _torch():
     return torch
 
 
-def vgg16_fc2(images: np.ndarray, batch_size: int = 64) -> np.ndarray:
+def vgg16_fc2(images: np.ndarray, batch_size: int = 128) -> np.ndarray:
     """Match the released IPR extractor: resize to 224 then VGG16 fc2."""
     torch = _torch()
     from torchvision import models
@@ -75,7 +77,7 @@ def vgg16_fc2(images: np.ndarray, batch_size: int = 64) -> np.ndarray:
         model = models.vgg16(pretrained=True)
     model = model.cuda().eval()
     result = np.empty((len(images), 4096), dtype=np.float32)
-    with torch.no_grad():
+    with torch.inference_mode():
         for start in range(0, len(images), batch_size):
             batch = torch.from_numpy(np.ascontiguousarray(images[start:start + batch_size])).float().cuda(non_blocking=True)
             if batch.shape[-2:] != (224, 224):
@@ -91,35 +93,195 @@ def _dist2(query, bank, bank_norm):
     return out.clamp_min_(0)
 
 
-def knn_radii(features: np.ndarray, k: int = 3, query_batch: int = 128) -> np.ndarray:
-    """Exact k-NN manifold radii; the self-distance is explicitly excluded."""
-    torch = _torch(); bank = torch.from_numpy(np.ascontiguousarray(features)).cuda()
-    bank_norm = bank.square().sum(dim=1); radii = np.empty(len(features), dtype=np.float32)
-    for start in range(0, len(features), query_batch):
-        query = bank[start:start + query_batch]
-        distances = _dist2(query, bank, bank_norm)
-        rows = torch.arange(len(query), device=bank.device)
-        distances[rows, start + rows] = float("inf")
-        radii[start:start + len(query)] = torch.topk(distances, k=k, largest=False).values[:, -1].sqrt().cpu().numpy()
+def _faiss_gpu_module():
+    """Return a GPU-enabled FAISS module when the optional dependency exists."""
+    try:
+        import faiss
+    except ImportError:
+        return None
+    if not all(hasattr(faiss, name) for name in ("StandardGpuResources", "index_cpu_to_gpu")):
+        return None
+    return faiss
+
+
+def _knn_radii_torch(
+    features: np.ndarray,
+    k: int,
+    query_batch: int,
+    *,
+    device,
+) -> np.ndarray:
+    """Exact tiled k-NN radii using PyTorch GEMMs on ``device``."""
+    import torch
+
+    bank = torch.from_numpy(np.ascontiguousarray(features, dtype=np.float32)).to(device)
+    bank_norm = bank.square().sum(dim=1)
+    radii = np.empty(len(features), dtype=np.float32)
+    with torch.inference_mode():
+        for start in range(0, len(features), query_batch):
+            query = bank[start:start + query_batch]
+            distances = _dist2(query, bank, bank_norm)
+            rows = torch.arange(len(query), device=bank.device)
+            distances[rows, start + rows] = float("inf")
+            radii[start:start + len(query)] = (
+                torch.topk(distances, k=k, largest=False).values[:, -1].sqrt().cpu().numpy()
+            )
     return radii
 
 
+def _knn_radii_faiss(features: np.ndarray, k: int, *, torch, faiss) -> np.ndarray:
+    """Exact self-k-NN radii through FAISS ``IndexFlatL2`` on the GPU.
+
+    FAISS is optional.  The index is flat (not IVF/PQ), so this changes the
+    implementation backend but not the nearest-neighbour definition.
+    """
+    values = np.ascontiguousarray(features, dtype=np.float32)
+    resources = faiss.StandardGpuResources()
+    cpu_index = faiss.IndexFlatL2(values.shape[1])
+    index = faiss.index_cpu_to_gpu(resources, torch.cuda.current_device(), cpu_index)
+    try:
+        index.add(values)
+        distances, neighbours = index.search(values, min(len(values), k + 1))
+        row_ids = np.arange(len(values), dtype=np.int64)[:, None]
+        # Exclude the query's own vector explicitly.  The extra neighbour
+        # keeps this correct for the usual case where self is returned first;
+        # masking also handles tied/duplicate vectors without relying on tie
+        # ordering.
+        filtered = np.where(neighbours != row_ids, distances, np.inf)
+        kth = np.partition(filtered, k - 1, axis=1)[:, k - 1]
+        if not np.all(np.isfinite(kth)):
+            raise RuntimeError("FAISS did not return enough non-self neighbours")
+        return np.sqrt(np.maximum(kth, 0.0)).astype(np.float32, copy=False)
+    finally:
+        del index, cpu_index, resources
+
+
+def knn_radii(features: np.ndarray, k: int = 3, query_batch: int = 1024) -> np.ndarray:
+    """Exact k-NN manifold radii; the self-distance is explicitly excluded.
+
+    ``LTX_METRICS_KNN_BACKEND=faiss`` forces the optional exact FAISS backend;
+    ``torch`` forces the tiled PyTorch implementation.  ``auto`` (default)
+    uses FAISS when a GPU build is installed and otherwise uses PyTorch.
+    """
+    if len(features) <= k:
+        raise ValueError(f"k-NN radii require more than k samples, got n={len(features)} k={k}")
+    torch = _torch()
+    backend = os.environ.get("LTX_METRICS_KNN_BACKEND", "auto").lower()
+    if backend not in {"auto", "faiss", "torch"}:
+        raise ValueError("LTX_METRICS_KNN_BACKEND must be one of: auto, faiss, torch")
+    if backend != "torch":
+        faiss = _faiss_gpu_module()
+        if faiss is None and backend == "faiss":
+            raise RuntimeError("LTX_METRICS_KNN_BACKEND=faiss requested but GPU FAISS is unavailable")
+        if faiss is not None:
+            try:
+                return _knn_radii_faiss(features, k, torch=torch, faiss=faiss)
+            except (RuntimeError, ValueError) as exc:
+                if backend == "faiss":
+                    raise
+                warnings.warn(
+                    f"GPU FAISS k-NN failed ({exc}); falling back to exact PyTorch tiles",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+    return _knn_radii_torch(
+        features,
+        k,
+        query_batch,
+        device=torch.device("cuda", torch.cuda.current_device()),
+    )
+
+
 def manifold_membership(query_features: np.ndarray, manifold_features: np.ndarray, manifold_radii: np.ndarray,
-                        query_batch: int = 128) -> float:
+                        query_batch: int = 1024) -> float:
     """Fraction of query features lying in the (exact) k-NN manifold."""
-    torch = _torch(); bank = torch.from_numpy(np.ascontiguousarray(manifold_features)).cuda()
-    norm = bank.square().sum(dim=1); radii2 = torch.from_numpy(np.ascontiguousarray(manifold_radii)).cuda().square()
+    torch = _torch()
+    return _manifold_membership_torch(
+        query_features,
+        manifold_features,
+        manifold_radii,
+        query_batch=query_batch,
+        device=torch.device("cuda", torch.cuda.current_device()),
+    )
+
+
+def _manifold_membership_torch(
+    query_features: np.ndarray,
+    manifold_features: np.ndarray,
+    manifold_radii: np.ndarray,
+    *,
+    query_batch: int,
+    device,
+) -> float:
+    """Exact single-direction manifold membership for a torch device."""
+    import torch
+
+    bank = torch.from_numpy(np.ascontiguousarray(manifold_features, dtype=np.float32)).to(device)
+    norm = bank.square().sum(dim=1)
+    radii2 = torch.from_numpy(np.ascontiguousarray(manifold_radii, dtype=np.float32)).to(device).square()
     hits = 0
-    for start in range(0, len(query_features), query_batch):
-        query = torch.from_numpy(np.ascontiguousarray(query_features[start:start + query_batch])).cuda()
-        hits += int((_dist2(query, bank, norm) <= radii2.unsqueeze(0)).any(dim=1).sum().item())
+    with torch.inference_mode():
+        for start in range(0, len(query_features), query_batch):
+            query = torch.from_numpy(
+                np.ascontiguousarray(query_features[start:start + query_batch], dtype=np.float32)
+            ).to(device)
+            hits += int((_dist2(query, bank, norm) <= radii2.unsqueeze(0)).any(dim=1).sum().item())
     return hits / len(query_features)
 
 
+def _fused_cross_membership_torch(
+    generated_features: np.ndarray,
+    reference_features: np.ndarray,
+    generated_radii: np.ndarray,
+    reference_radii: np.ndarray,
+    *,
+    query_batch: int,
+    device,
+) -> tuple[float, float]:
+    """Compute exact precision and recall from one cross-distance pass.
+
+    The old implementation formed the same generated/reference distance
+    matrix twice, once in each direction.  A tiled matrix is symmetric, so a
+    single GEMM can update both membership directions: generated points are
+    tested against reference balls, while reference points are tested against
+    generated balls.  The result is mathematically identical in float32.
+    """
+    import torch
+
+    generated = torch.from_numpy(np.ascontiguousarray(generated_features, dtype=np.float32)).to(device)
+    reference = torch.from_numpy(np.ascontiguousarray(reference_features, dtype=np.float32)).to(device)
+    generated_norm = generated.square().sum(dim=1)
+    reference_norm = reference.square().sum(dim=1)
+    generated_radii2 = torch.from_numpy(np.ascontiguousarray(generated_radii, dtype=np.float32)).to(device).square()
+    reference_radii2 = torch.from_numpy(np.ascontiguousarray(reference_radii, dtype=np.float32)).to(device).square()
+    precision_hits = torch.zeros(len(generated), dtype=torch.bool, device=device)
+    recall_hits = torch.zeros(len(reference), dtype=torch.bool, device=device)
+
+    with torch.inference_mode():
+        for start in range(0, len(generated), query_batch):
+            end = min(start + query_batch, len(generated))
+            distances = (
+                generated[start:end].square().sum(dim=1, keepdim=True)
+                + reference_norm.unsqueeze(0)
+                - 2 * (generated[start:end] @ reference.T)
+            ).clamp_min_(0)
+            precision_hits[start:end] = (distances <= reference_radii2.unsqueeze(0)).any(dim=1)
+            recall_hits |= (distances <= generated_radii2[start:end].unsqueeze(1)).any(dim=0)
+
+    return float(precision_hits.float().mean().item()), float(recall_hits.float().mean().item())
+
+
 def improved_prd_vgg16_k3(generated_images: np.ndarray, reference_features: np.ndarray,
-                           reference_radii: np.ndarray, batch_size: int = 64, query_batch: int = 128) -> tuple[float, float]:
+                           reference_radii: np.ndarray, batch_size: int = 128, query_batch: int = 1024) -> tuple[float, float]:
+    torch = _torch()
+    device = torch.device("cuda", torch.cuda.current_device())
     generated_features = vgg16_fc2(generated_images, batch_size=batch_size)
     generated_radii = knn_radii(generated_features, k=3, query_batch=query_batch)
-    precision = manifold_membership(generated_features, reference_features, reference_radii, query_batch=query_batch)
-    recall = manifold_membership(reference_features, generated_features, generated_radii, query_batch=query_batch)
-    return precision, recall
+    return _fused_cross_membership_torch(
+        generated_features,
+        reference_features,
+        generated_radii,
+        reference_radii,
+        query_batch=query_batch,
+        device=device,
+    )

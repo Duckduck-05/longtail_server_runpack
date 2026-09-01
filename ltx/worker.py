@@ -127,11 +127,14 @@ def wandb_config(task: Task) -> Dict[str, object]:
     for key in ("total_steps", "batch_size", "lr", "warmup", "T", "dropout", "ema_decay"):
         if key in train:
             config[f"train/{key}"] = train[key]
-    for key in ("num_images", "guidance_scale", "sample_method", "metric_protocol", "uniform_labels",
-                "inception_batch_size"):
+    for key in ("num_images", "guidance_scale", "sample_method", "ddim_steps", "ddim_skip_step",
+                "sampler_family", "metric_protocol", "uniform_labels", "inception_batch_size"):
         if key in evaluate:
             config[f"eval/{key}"] = evaluate[key]
     config.setdefault("eval/inception_batch_size", int(evaluate.get("inception_batch_size", 16)))
+    for key in ("objective", "cb_tau", "ccua_al", "ccua_ucl"):
+        if key in task.method_config:
+            config[f"objective/{key}"] = task.method_config[key]
     if task.method_config.get("resume_checkpoint"):
         config["resume/checkpoint"] = str(task.method_config["resume_checkpoint"])
         config["resume/mode"] = str(task.method_config.get("resume_mode", "full"))
@@ -239,7 +242,9 @@ _OUTPUT_SEGMENT = re.compile(rb"[^\r\n]*[\r\n]")
 
 def run_phase(phase, env: Dict[str, str], log_path: Path, state: StateDB, task_id: str, wb_run,
               progress_seconds: float = 30.0) -> int:
-    if phase.skip_if_exists and all(path.exists() for path in phase.skip_if_exists):
+    skip_if_valid = getattr(phase, "skip_if_valid", None)
+    outputs_exist = phase.skip_if_exists and all(path.exists() for path in phase.skip_if_exists)
+    if outputs_exist and (skip_if_valid is None or skip_if_valid()):
         print(f"[ltx] skip phase={phase.name}; outputs exist", flush=True)
         return 0
     phase_env = os.environ.copy()

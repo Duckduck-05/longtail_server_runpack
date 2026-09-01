@@ -13,7 +13,7 @@ elif [[ -f "$ROOT/.env" ]]; then
 fi
 
 # bootstrap is idempotent and verifies the vendored third-party manifest.
-bash scripts/bootstrap.sh
+LTX_ENABLE_LEGACY_NATIVE=1 bash scripts/bootstrap.sh
 source "${LTX_VENV:-$ROOT/.venv}/bin/activate"
 python tools/prepare_cifar_metric_assets.py \
   --repo "${LTX_REPOS_ROOT:-$ROOT/third_party}/CBDM-pytorch" \

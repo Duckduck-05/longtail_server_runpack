@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the balanced CIFAR reference assets consumed by the pinned CBDM code.
+"""Build balanced CIFAR reference assets for a pinned metric host.
 
 This is deliberately an external preparation step, not part of any model run:
 it extracts Inception features from all 50k images of the *balanced* CIFAR
@@ -77,10 +77,12 @@ def extract(repo: Path, data_root: Path, output: Path, dataset_name: str, batch_
     np.save(vgg_radii_path, knn_radii(vgg_features, k=3))
     # The released runpack deliberately vendors source without .git metadata.
     # Preserve provenance from the checked-in vendor manifest instead of
-    # silently requiring the original Longtail checkout.
+    # silently requiring the original checkout.
     manifest_path = repo.parent / "THIRD_PARTY_MANIFEST.json"
     try:
-        component = json.loads(manifest_path.read_text(encoding="utf-8"))["components"]["cbdm"]
+        components = json.loads(manifest_path.read_text(encoding="utf-8"))["components"]
+        component_name = "t2h_unified" if repo.name == "T2H-unified" else "cbdm"
+        component = components[component_name]
         commit = component["commit"]
     except Exception as exc:
         raise RuntimeError(f"vendored CBDM provenance missing: {manifest_path}: {exc}") from exc
@@ -88,8 +90,8 @@ def extract(repo: Path, data_root: Path, output: Path, dataset_name: str, batch_
         "dataset": dataset_name,
         "split": "balanced CIFAR training (50,000 images, class-uniform source)",
         "num_images": int(len(dataset)),
-        "feature_extractor": "pinned CBDM score.inception.InceptionV3 (2048-d)",
-        "metric_protocol": "CBDM/CORAL source FID and PRD feature cache",
+        "feature_extractor": f"pinned {repo.name} score.inception.InceptionV3 (2048-d)",
+        "metric_protocol": "shared FID and PRD feature cache",
         "repository": str(repo),
         "repository_commit": commit,
         "feature_file": feature_path.name,
@@ -121,7 +123,7 @@ def main() -> None:
     parser.add_argument("--datasets", nargs="+", choices=("cifar10", "cifar100"), default=("cifar10", "cifar100"))
     args = parser.parse_args()
     if not args.repo.joinpath("score", "inception.py").is_file():
-        raise FileNotFoundError(f"not a pinned CBDM checkout: {args.repo}")
+        raise FileNotFoundError(f"metric host is missing score/inception.py: {args.repo}")
     for name in args.datasets:
         required = (args.output / f"{name}.train.npz", args.output / f"{name}_feats.npy", args.output / f"{name}_labels.npy", args.output / f"{name}_vgg16_fc2.npy", args.output / f"{name}_vgg16_fc2_k3_radii.npy", args.output / f"{name}.metric_manifest.json")
         if all(path.exists() for path in required):

@@ -17,7 +17,10 @@ RESUME_MODES = ("full", "ema_only")
 _MODE_ALIASES = {
     "ema_warm_start": "ema_only",
 }
-_CHECKPOINT_NAME = re.compile(r"^ckpt_(\d+)\.pt$")
+# Accept both the legacy ``ckpt_200000.pt`` and namespaced unified artifacts
+# such as ``ckpt_unified_v2_200000.pt``.  Arbitrary renamed files still require
+# an explicit resume_step, so a path can never silently pick an unrelated step.
+_CHECKPOINT_NAME = re.compile(r"^(?:ckpt_|ckpt_[^/]*_)(\d+)\.pt$")
 
 
 def normalize_resume_mode(value: Any) -> str:

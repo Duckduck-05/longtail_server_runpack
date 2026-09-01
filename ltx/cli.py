@@ -88,10 +88,11 @@ def apply_resume_override(campaign, args) -> None:
             f"no campaign task matches --resume-method={method!r} "
             f"--resume-seed={seed!r} --resume-stage={stage!r}"
         )
-    unsupported = sorted({task.adapter for task in selected if task.adapter != "coral"})
+    supported_adapters = {"coral", "ccua", "t2h_unified"}
+    unsupported = sorted({task.adapter for task in selected if task.adapter not in supported_adapters})
     if unsupported:
         raise ValueError(
-            "external Coral resume overrides currently support only coral-adapter tasks; "
+            "external resume overrides currently support Coral, CCUA-DDPM, or T2H-unified tasks; "
             f"selected adapters={unsupported}"
         )
     if seed is None and len(selected) > 1 and "{seed}" not in str(checkpoint_template):

@@ -10,7 +10,7 @@ fi
 # ImageNet archive/manifests declared in this runpack's .env.local.
 # shellcheck source=prepare_imagenet_lt.sh
 source "$ROOT/scripts/prepare_imagenet_lt.sh"
-bash scripts/bootstrap.sh
+LTX_ENABLE_LEGACY_NATIVE=1 bash scripts/bootstrap.sh
 source "${LTX_VENV:-$ROOT/.venv}/bin/activate"
 bash scripts/prepare_cm_metric_assets.sh
 python tools/validate_imagenet_lt.py --image-root "$LTX_IMAGENET_ROOT" \

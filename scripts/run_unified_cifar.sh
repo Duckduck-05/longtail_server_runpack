@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-command source-native comparison: 45 controlled CIFAR-LT tasks.
+# One-command common T2H-host comparison: 54 controlled CIFAR-LT tasks.
 #
 # Extra arguments (e.g. --per-gpu 3 --gpus 0,1,2,3) pass straight through to
 # `ltx.cli run`, so the campaign's GPU packing can be tuned per rented box
@@ -18,7 +18,7 @@ fi
 # Every phase of this one command (bootstrap, metric-asset prep, the
 # scheduler's launch decisions, the final report) lands in one file so there
 # is a single log to read or hand over.
-CAMPAIGN_NAME="unified_cifar_v1"
+CAMPAIGN_NAME="unified_cifar_t2h_v1"
 RUNS_ROOT="${LTX_RUNS_ROOT:-$ROOT/runs}"
 LOG_DIR="$RUNS_ROOT/$CAMPAIGN_NAME/logs"
 mkdir -p "$LOG_DIR"
@@ -39,12 +39,13 @@ if [[ "${WANDB_MODE:-online}" == "disabled" ]]; then
 fi
 
 # `torchvision` downloads CIFAR-10/100 automatically during this preparation
-# and during training if necessary.  This derives the one balanced-reference
-# metric asset set used by all five methods.
+# and during training if necessary. This derives the one balanced-reference
+# metric asset set used by every common-host method row.
+T2H_METRICS_ROOT="${LTX_T2H_METRICS_ROOT:-${LTX_REPOS_ROOT:-$ROOT/third_party}/T2H-unified/stats}"
 python tools/prepare_cifar_metric_assets.py \
-  --repo "${LTX_REPOS_ROOT:-$ROOT/third_party}/CBDM-pytorch" \
+  --repo "${LTX_REPOS_ROOT:-$ROOT/third_party}/T2H-unified" \
   --data-root "${LTX_DATA_ROOT:-$ROOT/data}" \
-  --output "${LTX_METRICS_ROOT:-${LTX_REPOS_ROOT:-$ROOT/third_party}/CBDM-pytorch/stats}"
+  --output "$T2H_METRICS_ROOT"
 
 RUN_ARGS=(--config configs/unified_cifar.yaml)
 [[ -n "${LTX_GPU_IDS:-}" ]] && RUN_ARGS+=(--gpus "$LTX_GPU_IDS")

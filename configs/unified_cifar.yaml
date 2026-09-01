@@ -1,13 +1,14 @@
-# Unified Benchmark v1 — a new, source-native comparison protocol.
+# Unified Benchmark v1 — common T2H-host comparison protocol.
 #
 # This is deliberately *not* a merged reproduction of any paper table.  All
 # rows train from scratch on the same three public CIFAR-LT cells, use exactly
 # the same three seeds and update budget, generate 50k class-uniform samples,
-# and are scored by one evaluator.  OC is the upstream repository name of the
-# T2H method, so it appears once as ``t2h`` rather than as a duplicate row.
+# and execute on one T2H/OC_LT host. Method-specific losses are faithful ports
+# selected by objective dispatch; native repositories are provenance/archive
+# inputs, not runtime dependencies.
 campaign:
-  name: unified_cifar_v1
-  description: "Fair source-native comparison: DDPM, CBDM, T2H, CM, CORAL"
+  name: unified_cifar_t2h_v1
+  description: "Fair common-host comparison: DDPM, CBDM, T2H, CM, CORAL, CCUA"
   protocol: unified_cifar_v1
   server_config: configs/server.yaml
   paired_seeds: [0, 1, 2]
@@ -27,43 +28,34 @@ fairness_contract:
   train_batch_size: 64
   learning_rate: 0.0002
   diffusion_steps: 1000
+  beta_1: 0.0001
+  beta_T: 0.02
+  var_type: fixedlarge
+  grad_clip: 1.0
   generated_images: 50000
-  # Backbone is identical across all four upstream repos. Pinned here so a
-  # vendored-source update or a stray --flagfile cannot silently make the
-  # comparison apples-to-oranges while preflight still passes.
+  guidance_scale: 1.5
+  checkpoint_prefix: ckpt_unified_v2_
+  artifact_namespace: t2h_unified_v2
+  # The native repositories are audited for objective ports, but the active
+  # benchmark uses this pinned T2H host. A source/flag drift must not silently
+  # make the comparison apples-to-oranges while preflight still passes.
   unet_ch: 128
   unet_ch_mult: [1, 2, 2, 2]
   unet_attn: [1]
   unet_num_res_blocks: 2
   ema_decay: 0.9999
   conditional_label_schedule: cyclic_class_uniform
-  sampler_family: ancestral_ddpm
+  sampler_family: ddim_100
   metric_protocol: unified_cifar_v1
+  host_revision: t2h-unified-common-v2
 
 repositories:
-  ccua:
-    url: https://github.com/C-Fun/Contrastive-Conditional-Unconditional-Alignment-for-Long-tailed-Diffusion-Model.git
-    commit: baff9def6cfd553d4452d10eab0bac66ec2727aa
-    directory: CCUA-DDPM
-  coral:
-    url: https://github.com/SankarLab/coral-lt-diffusion.git
-    commit: 62c9dfad2da13f5be0f28975e5cd36727c1acc7a
-    directory: coral-lt-diffusion
-  cbdm:
-    url: https://github.com/qym7/CBDM-pytorch.git
-    commit: 513f7fffe7369343499611a8f68212a8b40f11a1
-    directory: CBDM-pytorch
-  oc:
+  t2h_unified:
     url: https://github.com/MediaBrain-SJTU/OC_LT.git
     commit: ced184378e8dc784958b6e14fd687781babd836d
-    directory: OC_LT
-  cm:
-    url: https://github.com/Feng-Hong/ImbDiff-CM.git
-    commit: 04262d7efc4130fda551fa1a1a22d8d5af636899
-    directory: ImbDiff-CM
+    directory: T2H-unified
 
-# Every adapter receives these exact settings.  The CM loop needs an inclusive
-# endpoint flag because its released CLI uses a half-open ``range``.
+# Every objective receives these exact settings on the common host.
 common_train: &common_train
   total_steps: 300000
   inclusive_final_step: true
@@ -71,10 +63,15 @@ common_train: &common_train
   lr: 0.0002
   warmup: 5000
   T: 1000
+  beta_1: 0.0001
+  beta_T: 0.02
+  var_type: fixedlarge
   dropout: 0.1
+  grad_clip: 1.0
   num_workers: 4
-  # Upstream keeps only the newest checkpoint, so this is purely crash-resume
-  # granularity: a job that dies at 280k restarts from 250k, not 200k.
+  # Checkpoints are retained under this namespace for exact restart/audit:
+  # a job that dies at 280k can resume from 250k rather than 200k. Legacy and
+  # native checkpoint names are never selected by the common adapter.
   save_step: 50000
   sample_step: 100000
   ch: 128
@@ -85,17 +82,21 @@ common_train: &common_train
   conditional: true
   cfg: true
   amp: false
+  checkpoint_prefix: ckpt_unified_v2_
 
 common_eval: &common_eval
   checkpoint_step: 300000
   num_images: 50000
   sample_batch_size: 64
-  guidance_scale: 1.0
+  guidance_scale: 1.5
   uniform_labels: true
-  sampler_family: ancestral_ddpm
+  sampler_family: ddim_100
+  sample_method: ddim
+  ddim_skip_step: 10
   metric_protocol: unified_cifar_v1
   paper_metrics: true
-  metrics_file: metrics.unified.json
+  artifact_namespace: t2h_unified_v2
+  metrics_file: metrics.unified.v2.json
   # KID uses the CM cubic-kernel estimator over the same pinned Inception
   # features/reference as FID.  The seed controls only its subset draws.
   kid: true
@@ -104,7 +105,7 @@ common_eval: &common_eval
   kid_seed: 2026
   # This creates an auxiliary tail breakdown, not a second main-table metric.
   # It contains per-class FID plus CM's Many/Medium/Few class groups.
-  per_class_metrics_file: metrics.per_class.json
+  per_class_metrics_file: metrics.per_class.v2.json
   longtail_groups: cm_three_way
 
 # CCUA = alignment loss + unsupervised contrastive loss. The weights are
@@ -121,109 +122,109 @@ ccua_method: &ccua_method
 
 stages:
   - name: c10_if100_core
-    adapter: coral
+    adapter: t2h_unified
     dataset: {name: cifar10lt_if100, data_type: cifar10lt, imbalance_factor: 0.01, split_seed: 0, root: "${LTX_DATA_ROOT:-./data}"}
     train: *common_train
-    eval: {<<: *common_eval, sample_method: cfg}
+    eval: {<<: *common_eval}
     methods:
       - {name: ddpm}
       - {name: cbdm, flags: [--cb, --tau=1.0]}
-      - {name: coral, flags: [--supcon, --supcon_weight=0.01, --supcon_temp=0.12, --temperature_scaling=0.8]}
+      - {name: coral, coral_projection_dim: 128, flags: [--supcon, --supcon_weight=0.01, --supcon_temp=0.12, --temperature_scaling=0.8]}
     seeds: [0, 1, 2]
     tags: [unified-cifar-v1, cifar10lt, if100, core]
   - name: c10_if100_t2h
-    adapter: oc
+    adapter: t2h_unified
     dataset: {name: cifar10lt_if100, data_type: cifar10lt, imbalance_factor: 0.01, split_seed: 0, num_class: 10, root: "${LTX_DATA_ROOT:-./data}"}
     train: *common_train
-    eval: {<<: *common_eval, sample_method: ddpm, ddim_skip_step: 1}
+    eval: {<<: *common_eval}
     methods: [{name: t2h}]
     seeds: [0, 1, 2]
     tags: [unified-cifar-v1, cifar10lt, if100, t2h]
   - name: c10_if100_cm
-    adapter: cm
+    adapter: t2h_unified
     dataset: {name: cifar10lt_if100, data_type: cifar10lt, imbalance_factor: 0.01, split_seed: 0, num_classes: 10, img_size: 32, root: "${LTX_DATA_ROOT:-./data}"}
     train: *common_train
-    eval: {<<: *common_eval, sample_method: ddpm, ddim_skip_step: 1}
+    eval: {<<: *common_eval}
     methods: [{name: cm, upstream_method: cm}]
     seeds: [0, 1, 2]
     tags: [unified-cifar-v1, cifar10lt, if100, cm]
   - name: c10_if100_ccua
-    adapter: ccua
+    adapter: t2h_unified
     dataset: {name: cifar10lt_if100, data_type: cifar10lt, imbalance_factor: 0.01, split_seed: 0, num_class: 10, img_size: 32, root: "${LTX_DATA_ROOT:-./data}"}
     train: *common_train
-    eval: {<<: *common_eval, sample_method: ddpm, ddim_skip_step: 1}
+    eval: {<<: *common_eval}
     methods: [*ccua_method]
     seeds: [0, 1, 2]
     tags: [unified-cifar-v1, cifar10lt, if100, ccua]
 
   - name: c10_if1000_core
-    adapter: coral
+    adapter: t2h_unified
     dataset: {name: cifar10lt_if1000, data_type: cifar10lt, imbalance_factor: 0.001, split_seed: 0, root: "${LTX_DATA_ROOT:-./data}"}
     train: *common_train
-    eval: {<<: *common_eval, sample_method: cfg}
+    eval: {<<: *common_eval}
     methods:
       - {name: ddpm}
       - {name: cbdm, flags: [--cb, --tau=1.0]}
-      - {name: coral, flags: [--supcon, --supcon_weight=0.01, --supcon_temp=0.10, --temperature_scaling=1.0]}
+      - {name: coral, coral_projection_dim: 128, flags: [--supcon, --supcon_weight=0.01, --supcon_temp=0.10, --temperature_scaling=1.0]}
     seeds: [0, 1, 2]
     tags: [unified-cifar-v1, cifar10lt, if1000, core]
   - name: c10_if1000_t2h
-    adapter: oc
+    adapter: t2h_unified
     dataset: {name: cifar10lt_if1000, data_type: cifar10lt, imbalance_factor: 0.001, split_seed: 0, num_class: 10, root: "${LTX_DATA_ROOT:-./data}"}
     train: *common_train
-    eval: {<<: *common_eval, sample_method: ddpm, ddim_skip_step: 1}
+    eval: {<<: *common_eval}
     methods: [{name: t2h}]
     seeds: [0, 1, 2]
     tags: [unified-cifar-v1, cifar10lt, if1000, t2h]
   - name: c10_if1000_cm
-    adapter: cm
+    adapter: t2h_unified
     dataset: {name: cifar10lt_if1000, data_type: cifar10lt, imbalance_factor: 0.001, split_seed: 0, num_classes: 10, img_size: 32, root: "${LTX_DATA_ROOT:-./data}"}
     train: *common_train
-    eval: {<<: *common_eval, sample_method: ddpm, ddim_skip_step: 1}
+    eval: {<<: *common_eval}
     methods: [{name: cm, upstream_method: cm}]
     seeds: [0, 1, 2]
     tags: [unified-cifar-v1, cifar10lt, if1000, cm]
   - name: c10_if1000_ccua
-    adapter: ccua
+    adapter: t2h_unified
     dataset: {name: cifar10lt_if1000, data_type: cifar10lt, imbalance_factor: 0.001, split_seed: 0, num_class: 10, img_size: 32, root: "${LTX_DATA_ROOT:-./data}"}
     train: *common_train
-    eval: {<<: *common_eval, sample_method: ddpm, ddim_skip_step: 1}
+    eval: {<<: *common_eval}
     methods: [*ccua_method]
     seeds: [0, 1, 2]
     tags: [unified-cifar-v1, cifar10lt, if1000, ccua]
 
   - name: c100_if100_core
-    adapter: coral
+    adapter: t2h_unified
     dataset: {name: cifar100lt_if100, data_type: cifar100lt, imbalance_factor: 0.01, split_seed: 0, root: "${LTX_DATA_ROOT:-./data}"}
     train: *common_train
-    eval: {<<: *common_eval, sample_method: cfg}
+    eval: {<<: *common_eval}
     methods:
       - {name: ddpm}
       - {name: cbdm, flags: [--cb, --tau=1.0]}
-      - {name: coral, flags: [--supcon, --supcon_weight=0.01, --supcon_temp=0.09, --temperature_scaling=1.0]}
+      - {name: coral, coral_projection_dim: 128, flags: [--supcon, --supcon_weight=0.01, --supcon_temp=0.09, --temperature_scaling=1.0]}
     seeds: [0, 1, 2]
     tags: [unified-cifar-v1, cifar100lt, if100, core]
   - name: c100_if100_t2h
-    adapter: oc
+    adapter: t2h_unified
     dataset: {name: cifar100lt_if100, data_type: cifar100lt, imbalance_factor: 0.01, split_seed: 0, num_class: 100, root: "${LTX_DATA_ROOT:-./data}"}
     train: *common_train
-    eval: {<<: *common_eval, sample_method: ddpm, ddim_skip_step: 1}
+    eval: {<<: *common_eval}
     methods: [{name: t2h}]
     seeds: [0, 1, 2]
     tags: [unified-cifar-v1, cifar100lt, if100, t2h]
   - name: c100_if100_cm
-    adapter: cm
+    adapter: t2h_unified
     dataset: {name: cifar100lt_if100, data_type: cifar100lt, imbalance_factor: 0.01, split_seed: 0, num_classes: 100, img_size: 32, root: "${LTX_DATA_ROOT:-./data}"}
     train: *common_train
-    eval: {<<: *common_eval, sample_method: ddpm, ddim_skip_step: 1}
+    eval: {<<: *common_eval}
     methods: [{name: cm, upstream_method: cm}]
     seeds: [0, 1, 2]
     tags: [unified-cifar-v1, cifar100lt, if100, cm]
   - name: c100_if100_ccua
-    adapter: ccua
+    adapter: t2h_unified
     dataset: {name: cifar100lt_if100, data_type: cifar100lt, imbalance_factor: 0.01, split_seed: 0, num_class: 100, img_size: 32, root: "${LTX_DATA_ROOT:-./data}"}
     train: *common_train
-    eval: {<<: *common_eval, sample_method: ddpm, ddim_skip_step: 1}
+    eval: {<<: *common_eval}
     methods: [*ccua_method]
     seeds: [0, 1, 2]
     tags: [unified-cifar-v1, cifar100lt, if100, ccua]

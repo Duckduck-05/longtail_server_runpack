@@ -149,6 +149,22 @@
         "utils/augmentation.py": "3fc7752e836ed718ff593bcc8d44fe7b7103d3b5cd81e4258f8f28454410da98"
       }
     },
+    "t2h_unified": {
+      "commit": "ced184378e8dc784958b6e14fd687781babd836d",
+      "directory": "T2H-unified",
+      "origin": "https://github.com/MediaBrain-SJTU/OC_LT",
+      "source_worktree_status": [
+        "unified_main.py",
+        "unified_objectives.py",
+        "model/model_cm.py",
+        "ipsvt_aux.py",
+        "ltx_manifest_dataset.py",
+        "metrics.py",
+        "score/prd_score.py",
+        "score/inception.py"
+      ],
+      "host": "T2H/OC_LT with faithful objective ports"
+    },
     "oc": {
       "commit": "ced184378e8dc784958b6e14fd687781babd836d",
       "directory": "OC_LT",

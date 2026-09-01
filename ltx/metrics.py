@@ -55,21 +55,44 @@ def _flatten(prefix,obj,out):
 _BOOKKEEPING = ("num_generated", "num_reference", "generated", "reference",
                 "seed", "samples", "label_histogram")
 
+
+def _is_unified_v2_run(run_dir: Path) -> bool:
+    """Identify the migrated host without importing the vendored trainer."""
+    try:
+        payload = json.loads((run_dir / "unified_host.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return False
+    return (
+        isinstance(payload, dict)
+        and payload.get("host_revision") == "t2h-unified-common-v2"
+        and payload.get("checkpoint_schema") == 2
+    )
+
 def _is_bookkeeping(key: str) -> bool:
     return key.rsplit("/", 1)[-1] in _BOOKKEEPING
 
 def collect_metrics(run_dir: Path)->Dict[str,float]:
     out={}
+    unified_v2 = _is_unified_v2_run(run_dir)
     semantic=run_dir/"semantic_metrics.json"
     if semantic.exists():
         p=json.loads(semantic.read_text())
         for k in ("js","rare_mode_mass","coarse_consistency","memorization","num_generated"):
             if k in p: _put(out,f"semantic/{k}",p[k])
         _flatten("generation",p.get("generation",{}),out); _flatten("safety",p.get("safety",{}),out)
-    candidates=[run_dir/"stdout.log",*run_dir.glob("res_ema_*.txt"),*run_dir.glob("eval.txt")]
-    for path in candidates:
+    text_candidates = [] if unified_v2 else [run_dir/"stdout.log", *run_dir.glob("res_ema_*.txt"), *run_dir.glob("eval.txt")]
+    for path in text_candidates:
         for k,v in parse_text_metrics(path).items(): out[f"generation/{k}"]=v
-    for path in run_dir.rglob("metrics*.json"):
+    metric_paths = run_dir.rglob("metrics*.json")
+    if unified_v2:
+        # A common-host run is allowed to publish only its namespaced metric
+        # outputs.  In particular, do not let an old native metrics file or a
+        # stale stdout line overwrite the new value in W&B.
+        metric_paths = (
+            path for path in metric_paths
+            if path.name in {"metrics.unified.v2.json", "metrics.per_class.v2.json", "metrics.imagenet.json"}
+        )
+    for path in metric_paths:
         if path.name=="metrics.collected.json": continue
         try: payload = json.loads(path.read_text())
         except Exception: continue
