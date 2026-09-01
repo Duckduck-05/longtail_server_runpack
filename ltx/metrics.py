@@ -98,7 +98,7 @@ def collect_metrics(run_dir: Path)->Dict[str,float]:
         except Exception: continue
         if not isinstance(payload, dict): continue
         if isinstance(payload.get("metrics"), dict):
-            # evaluate_coral2025.py wraps FID/IS/KID/PRD in a "metrics" key
+            # The shared CCUA evaluator wraps FID/IS/KID/PRD in a "metrics" key
             # alongside "protocol"/"label_histogram" metadata. Flattening the
             # whole payload buried every metric two levels deep as
             # generation/metrics/FID and swept protocol constants in as if

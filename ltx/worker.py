@@ -132,7 +132,11 @@ def wandb_config(task: Task) -> Dict[str, object]:
         if key in evaluate:
             config[f"eval/{key}"] = evaluate[key]
     config.setdefault("eval/inception_batch_size", int(evaluate.get("inception_batch_size", 16)))
-    for key in ("objective", "cb_tau", "ccua_al", "ccua_ucl"):
+    for key in (
+        "objective", "cb_tau", "ccua_al", "ccua_ucl", "ipsvt_mode",
+        "ipsvt_K", "ipsvt_s", "ipsvt_delta", "ipsvt_tau", "ipsvt_every",
+        "ipsvt_batch", "ipsvt_lambda_aux", "ipsvt_lambda_svt",
+    ):
         if key in task.method_config:
             config[f"objective/{key}"] = task.method_config[key]
     if task.method_config.get("resume_checkpoint"):
@@ -357,12 +361,12 @@ def resolve_batch_size(task: Task, attempt: int) -> Optional[int]:
 
     A retried task may fall back to a smaller batch after an OOM, but never to
     one larger than the campaign's own configured batch, and never at all for
-    a task scored under the unified fairness contract: that table's whole
+    a task scored under a locked fairness contract: that table's whole
     point is that every row shares one training budget, so a silently smaller
     (or larger) batch on retry would publish an off-contract row instead.
     """
     contract_batch = int(task.train.get("batch_size", 128))
-    if task.eval.get("metric_protocol") == "unified_cifar_v1":
+    if task.eval.get("metric_protocol") in {"unified_cifar_v1", "native_cifar_v1"}:
         return None
     oom_sizes = task.retry.get("oom_batch_sizes", [])
     if attempt <= 1 or not oom_sizes:

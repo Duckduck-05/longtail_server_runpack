@@ -30,7 +30,7 @@ def polynomial_mmd_kid(
 ) -> float:
     """Compute KID with CM's cubic polynomial kernel estimator.
 
-    This is algebraically identical to ``ImbDiff-CM/imbdiff_cm/metrics.py``
+    This is algebraically identical to the released reference implementation
     except that subset draws use a caller-controlled random generator.  It is
     intentionally a *single* KID estimate, not an artificial standard
     deviation based on repeatedly re-evaluating one trained model.

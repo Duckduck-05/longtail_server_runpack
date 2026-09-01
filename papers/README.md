@@ -1,7 +1,7 @@
 # Source papers
 
-The six methods in the unified CIFAR-LT table, one paper each. Fetch or
-refresh them with:
+The active CCUA-backed table and its paper baselines. Fetch or refresh the
+reference papers with:
 
 ```bash
 bash papers/fetch_papers.sh
@@ -21,13 +21,13 @@ third-party copyrighted works. The script re-fetches them on demand.
 
 ## Notes on provenance
 
-- **`ddpm` is not a separate paper's method.** That row is the CBDM repository
-  run *without* `--cb`, i.e. a plain conditional DDPM baseline. The DDPM paper
-  is included because it defines the backbone, sampler, and noise schedule that
-  every other row builds on.
-- **`t2h` is the `OC_LT` repository.** Upstream names the method T2H; `OC` is
-  only the repo name. It appears once in the table, not twice — see the note in
-  the top-level `README.md`.
+- **`ddpm` is not a separate objective implementation.** It is the CCUA-DDPM
+  host run with the sibling long-tail losses disabled, i.e. a plain conditional
+  DDPM baseline. The DDPM paper is included because it defines the backbone,
+  sampler, and noise schedule.
+- **T2H, CM, and CORAL are archived comparison sources.** Their vendored code
+  and old runpack launchers live under `archive/legacy_source_ccua_20260901/`;
+  they are not active rows in the CCUA campaign.
 - **T2H and CM are not on arXiv**, and Semantic Scholar lists no open-access
   mirror. OpenReview is the source of record for both, and it serves PDFs behind
   a bot challenge, so `fetch_papers.sh` cannot download them non-interactively.
@@ -40,9 +40,9 @@ third-party copyrighted works. The script re-fetches them on demand.
   ```
 
   Otherwise the script prints the forum URL to open in a browser.
-- **CORAL** is also vendored inside the source tree at
-  `third_party/coral-lt-diffusion/CORAL-NeurIPS2025-Rodriguezetal.pdf`; the copy
-  here is the arXiv version.
+- **CORAL** has an archived vendored copy under
+  `archive/legacy_source_ccua_20260901/third_party/`; the copy here is the
+  arXiv version.
 - **`ccua` is the U-Net half of its repository.** Upstream ships `CCUA-DDPM`
   (U-Net) and `CCUA-SiT` (Diffusion Transformer); only the former shares this
   table's backbone, so only `CCUA-DDPM/DDPM` is vendored. Two consequences for
@@ -54,9 +54,8 @@ third-party copyrighted works. The script re-fetches them on demand.
   vendored — every row is scored by this repo's shared evaluator instead.
   Its Table 8 reports CIFAR-100-LT with DDPM 1000 steps, the same sampler family
   as this contract, so it is the paper number most comparable to the `ccua` row.
-- **IGD-ML** (`third_party/IGD-ML`, "Principled Long-Tailed Generative Modelling
-  via Diffusion Models") is vendored but deliberately **not** part of the table,
-  so its paper is not fetched here.
+- **IGD-ML** is retained only in the cleanup archive and is deliberately not
+  part of the active table.
 
 ## BibTeX
 

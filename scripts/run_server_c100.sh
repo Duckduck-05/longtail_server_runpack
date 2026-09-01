@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-command entrypoint for the main CIFAR-100-LT baseline campaign (9 tasks).
+# One-command entrypoint for the main CIFAR-100-LT baseline campaign (12 tasks).
 #
 # Same env/bootstrap handling as scripts/run_server.sh; only the campaign
 # config differs. Any arguments (e.g. --per-gpu 3 --gpus 0,1,2,3) pass
@@ -9,7 +9,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-ENV_NAME="${LTX_CONDA_ENV:-longtail-unified-cifar}"
+ENV_NAME="${LTX_CONDA_ENV:-longtail-ccua}"
 if [[ -n "${PYTHON_BIN:-}" ]]; then
   candidate="$PYTHON_BIN"
 elif command -v conda >/dev/null 2>&1; then

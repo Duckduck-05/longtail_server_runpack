@@ -2,14 +2,14 @@
 # One-command entrypoint for a fresh CUDA server.
 #
 # Any arguments (e.g. --per-gpu 3 --gpus 0,1,2,3) pass through to
-# the native CIFAR baseline launcher -> `ltx.cli run`. With no arguments, GPU packing
+# the CCUA-backbone CIFAR launcher -> `ltx.cli run`. With no arguments, GPU packing
 # auto-detects from free VRAM.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-ENV_NAME="${LTX_CONDA_ENV:-longtail-unified-cifar}"
+ENV_NAME="${LTX_CONDA_ENV:-longtail-ccua}"
 if [[ -n "${PYTHON_BIN:-}" ]]; then
   candidate="$PYTHON_BIN"
 elif command -v conda >/dev/null 2>&1; then
@@ -33,7 +33,5 @@ else
 fi
 
 export PYTHON_BIN="$candidate"
-# The default entrypoint is the native CIFAR-100-LT baseline wave. The older
-# unified-host launchers remain available only for explicitly named secondary
-# experiments and are not the main table.
+# The default entrypoint is the CCUA-backbone CIFAR-100-LT wave.
 exec bash scripts/run_native_cifar_c100.sh "$@"

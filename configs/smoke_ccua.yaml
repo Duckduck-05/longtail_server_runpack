@@ -46,6 +46,7 @@ shared_backbone:
     sample_method: ddpm
     ddim_skip_step: 100
     paper_metrics: false
+    standard_metrics: false
 
 stages:
   - name: smoke_ccua

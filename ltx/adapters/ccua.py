@@ -18,17 +18,18 @@ class CCUAAdapter(Adapter):
     Upstream ships two pipelines; this drives ``CCUA-DDPM``, the U-Net one, whose
     flag defaults already match the unified backbone (ch=128, [1,2,2,2], attn[1],
     2 blocks, EMA 0.9999, T=1000). Its long-tailed CIFAR split is the same
-    ``ImbalanceCIFAR`` construction CBDM uses with ``rand_number=0``, so every
+    exponential ``ImbalanceCIFAR`` construction with ``rand_number=0``, so every
     row of the table trains on an identical subset.  For the deferred
     ImageNet-LT cell, ``data_type=imagenet_lt`` selects the bootstrap-installed
     manifest loader; this is important because the released ImageFolder path
     would otherwise train on all of ImageNet instead of the published LT split.
 
-    The same adapter can express the plain DDPM and CBDM objectives by setting
-    ``objective=ddpm`` or ``objective=cbdm`` while retaining the CCUA
-    U-Net/data/checkpoint plumbing.  Objective switches are translated to the
-    flags understood by this repository, so a native campaign cannot
-    accidentally send the Coral-family ``--cb``/``--tau`` flags to CCUA.
+    The same adapter can express the plain DDPM, CBDM, T2H transfer, native
+    CCUA, and old IP-SVT objectives by setting the explicit ``objective`` field
+    while retaining the CCUA U-Net/data/checkpoint plumbing. Objective
+    switches are translated to the flags understood by this repository, so a
+    native campaign cannot accidentally send the Coral-family ``--cb``/``--tau``
+    flags to CCUA.
 
     Sampling goes through ``main.py --sample`` rather than upstream
     ``evaluate.py``: the latter imports CCUA's own FLD/CLIP/DINOv2 metric stack
@@ -75,7 +76,7 @@ class CCUAAdapter(Adapter):
         data_root = task.dataset.get("root", task.runtime.get("data_root", "./data"))
         metrics_root = Path(os.environ.get(
             "LTX_METRICS_ROOT",
-            str(Path(task.runtime["repos_root"]) / "CBDM-pytorch" / "stats"),
+            str(repo / "stats"),
         )).expanduser()
         if not metrics_root.is_absolute():
             metrics_root = (Path(task.runtime["repos_root"]).parent / metrics_root).resolve()
@@ -87,9 +88,9 @@ class CCUAAdapter(Adapter):
         # method in the campaign YAML, but forced to zero for sibling
         # objectives so their objective identity cannot drift with defaults.
         objective = str(method_cfg.get("objective", task.method)).lower()
-        if objective not in {"ddpm", "cbdm", "ccua"}:
+        if objective not in {"ddpm", "cbdm", "t2h", "ccua", "ipsvt"}:
             raise ValueError(
-                "CCUA U-Net adapter supports objective=ddpm, cbdm, or ccua, "
+                "CCUA U-Net adapter supports objective=ddpm, cbdm, t2h, ccua, or ipsvt, "
                 f"got {objective!r}"
             )
         if objective == "cbdm":
@@ -104,11 +105,37 @@ class CCUAAdapter(Adapter):
             objective_flags = [
                 "--nocbdm", "--ccua_al=0.0", "--ccua_ucl=0.0",
             ]
-        else:
+        elif objective == "t2h":
+            # CCUA-DDPM vendors the same T2H transfer target used by the
+            # original OC_LT/T2H trainer. Keep it as a separate objective,
+            # but run it through this campaign's single U-Net/data host.
+            objective_flags = [
+                "--transfer_x0", "--transfer_mode=t2h",
+                "--nocbdm", "--ccua_al=0.0", "--ccua_ucl=0.0",
+            ]
+        elif objective == "ccua":
             ccua_al = method_cfg.get("ccua_al", 1.0)
             ccua_ucl = method_cfg.get("ccua_ucl", 1.0)
             objective_flags = [
                 "--nocbdm", f"--ccua_al={ccua_al}", f"--ccua_ucl={ccua_ucl}",
+            ]
+        else:  # objective == "ipsvt"
+            ipsvt_mode = str(method_cfg.get("ipsvt_mode", "full"))
+            ipsvt_k = int(method_cfg.get("ipsvt_K", 4))
+            if ipsvt_mode not in {"full", "twin", "clean"}:
+                raise ValueError(f"native IP-SVT mode must be full, twin, or clean; got {ipsvt_mode!r}")
+            if ipsvt_k < 2:
+                raise ValueError("native old Gram-SVT requires ipsvt_K >= 2")
+            objective_flags = [
+                "--nocbdm", "--ccua_al=0.0", "--ccua_ucl=0.0", "--ipsvt",
+                f"--ipsvt_mode={ipsvt_mode}", f"--ipsvt_K={ipsvt_k}",
+                f"--ipsvt_s={method_cfg.get('ipsvt_s', 0.05)}",
+                f"--ipsvt_delta={method_cfg.get('ipsvt_delta', 0.1)}",
+                f"--ipsvt_tau={method_cfg.get('ipsvt_tau', 1e-6)}",
+                f"--ipsvt_every={method_cfg.get('ipsvt_every', 4)}",
+                f"--ipsvt_batch={method_cfg.get('ipsvt_batch', 16)}",
+                f"--ipsvt_lambda_aux={method_cfg.get('ipsvt_lambda_aux', 1.0)}",
+                f"--ipsvt_lambda_svt={method_cfg.get('ipsvt_lambda_svt', 1.0)}",
             ]
 
         train_cmd = [
@@ -143,17 +170,18 @@ class CCUAAdapter(Adapter):
         if method_cfg.get("brs", False):
             train_cmd += ["--brs", f"--brs_factor={method_cfg.get('brs_factor', 0.1)}"]
         train_cmd += list(map(str, method_cfg.get("flags", [])))
-        # Transfer is a separate long-tail method and is disabled for all
-        # three native objectives.  Keep these objective switches after any
-        # optional flags so a campaign cannot re-enable a sibling loss by
-        # accident.
-        train_cmd += ["--notransfer_x0", *objective_flags]
+        # Transfer is disabled for every native objective except the explicit
+        # T2H row. Keep objective switches after optional flags so a campaign
+        # cannot accidentally re-enable a sibling loss.
+        if objective != "t2h":
+            train_cmd.append("--notransfer_x0")
+        train_cmd += objective_flags
 
         # Upstream always iterates range(0, total_steps) and names checkpoints
         # step + ckpt_step, so a resume must be given the *remaining* budget or
         # it would train the full budget a second time.  An explicit external
         # checkpoint is allowed only as a full-state CCUA-DDPM checkpoint; an
-        # EMA-only Coral/unified transplant is rejected rather than silently
+        # EMA-only cross-backbone transplant is rejected rather than silently
         # becoming a fresh optimizer run.
         explicit_resume, resume_mode = get_resume_spec(train, method_cfg)
         if explicit_resume is not None:
@@ -231,7 +259,7 @@ class CCUAAdapter(Adapter):
                 if not reference_manifest:
                     raise ValueError("ImageNet-LT requires dataset.reference_manifest for metrics")
                 metric_repo = Path(task.runtime["repos_root"]) / str(
-                    task.method_config.get("metric_repo", "ImbDiff-CM")
+                    task.method_config.get("metric_repo", "CCUA-DDPM")
                 )
                 phases.append(Phase(
                     f"paper_metrics{suffix}",
@@ -254,8 +282,8 @@ class CCUAAdapter(Adapter):
                 ))
                 continue
             metric_cmd = [
-                py, str(self.root / "tools" / "evaluate_coral2025.py"),
-                "--repo", str(Path(task.runtime["repos_root"]) / "CBDM-pytorch"),
+                py, str(self.root / "tools" / "evaluate_ccua.py"),
+                "--repo", str(repo),
                 "--data-type", str(task.dataset["data_type"]),
                 "--samples", str(samples), "--labels", str(labels),
                 "--metrics-root", str(metrics_root),

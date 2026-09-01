@@ -26,8 +26,8 @@ def _phase_command(phase) -> str:
 def test_native_contract_uses_one_ccua_host_for_all_objectives():
     campaign = _campaign()
 
-    assert len(campaign.tasks) == 9
-    assert {task.method for task in campaign.tasks} == {"ddpm", "cbdm", "ccua"}
+    assert len(campaign.tasks) == 12
+    assert {task.method for task in campaign.tasks} == {"ddpm", "cbdm", "ccua", "ipsvt"}
     assert {task.seed for task in campaign.tasks} == {0, 1, 2}
     assert {task.adapter for task in campaign.tasks} == {"ccua"}
     assert {task.repository["directory"] for task in campaign.tasks} == {"CCUA-DDPM"}
@@ -36,7 +36,7 @@ def test_native_contract_uses_one_ccua_host_for_all_objectives():
     assert campaign.raw["native_contract"]["repository"] == "ccua"
 
 
-@pytest.mark.parametrize("method", ["ddpm", "cbdm", "ccua"])
+@pytest.mark.parametrize("method", ["ddpm", "cbdm", "ccua", "ipsvt"])
 def test_ccua_adapter_dispatches_native_objective_and_uses_official_sampler(tmp_path, method):
     campaign = _campaign()
     task = next(task for task in campaign.tasks if task.method == method and task.seed == 0)
@@ -60,9 +60,16 @@ def test_ccua_adapter_dispatches_native_objective_and_uses_official_sampler(tmp_
     if method in {"ddpm", "cbdm"}:
         assert "--ccua_al=0.0" in train
         assert "--ccua_ucl=0.0" in train
-    else:
+    elif method == "ccua":
         assert "--ccua_al=1.0" in train
         assert "--ccua_ucl=1.0" in train
+    else:
+        assert "--ipsvt" in train
+        assert "--ipsvt_mode=full" in train
+        assert "--ipsvt_K=4" in train
+        assert "--ipsvt_lambda_svt=1.0" in train
+        assert "--ccua_al=0.0" in train
+        assert "--ccua_ucl=0.0" in train
 
     # Sampling is delegated to CCUA-DDPM's main.py, which constructs its
     # GaussianDiffusionSamplerDDIM. The shared metric evaluator is a later
@@ -72,6 +79,24 @@ def test_ccua_adapter_dispatches_native_objective_and_uses_official_sampler(tmp_
     assert "--sample_method=ddim" in sample
     assert "--ddim_skip_step=10" in sample
     assert "--uniform_labels" in sample
+
+
+def test_ccua_adapter_dispatches_t2h_transfer_on_the_same_host(tmp_path):
+    original = next(task for task in _campaign().tasks if task.method == "ddpm" and task.seed == 0)
+    task = replace(
+        original,
+        method="t2h",
+        method_config={"name": "t2h", "objective": "t2h"},
+        run_dir=str(tmp_path / "t2h"),
+    )
+
+    train = CCUAAdapter(ROOT).phases(task)[0].command
+    assert "--transfer_x0" in train
+    assert "--transfer_mode=t2h" in train
+    assert "--notransfer_x0" not in train
+    assert "--nocbdm" in train
+    assert "--ccua_al=0.0" in train
+    assert "--ccua_ucl=0.0" in train
 
 
 def test_native_preflight_accepts_ccua_contract_and_rejects_host_or_sampler_drift():
@@ -134,7 +159,7 @@ def test_ccua_adapter_does_not_discard_a_step_zero_checkpoint(tmp_path):
     assert "--total_steps=300001" in train
 
 
-@pytest.mark.parametrize("method", ["ddpm", "cbdm", "ccua"])
+@pytest.mark.parametrize("method", ["ddpm", "cbdm", "ccua", "ipsvt"])
 def test_wandb_config_records_the_ccua_objective_branch(method):
     task = next(task for task in _campaign().tasks if task.method == method and task.seed == 0)
     config = wandb_config(task)

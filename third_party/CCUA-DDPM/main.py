@@ -22,7 +22,7 @@ from diffusion import GaussianDiffusionTrainer, GaussianDiffusionSampler, Gaussi
 from model.model import UNet
 from model.classifier import HalveUNetClassifier
 
-from dataset import ImbalanceCIFAR100, ImbalanceCIFAR10, ImbalanceImageNet, ImbalanceTinyImageNet, ImageNet, PlacesLT, PlacesLD, SubsetPerLabel
+from dataset import ImbalanceCIFAR100, ImbalanceCIFAR10, ImbalanceImageNet, ImbalanceTinyImageNet, ImageNet, ImageNetLTManifest, PlacesLT, PlacesLD, SubsetPerLabel
 # from score_new.both import get_inception_and_fid_score as get_inception_and_fid_score_new
 
 
@@ -68,6 +68,7 @@ flags.DEFINE_string('data_type', 'cifar100', help='data type, must be in \
                                                   placeslt]')
 flags.DEFINE_string('data_path', '.cache/data', help='data path')
 flags.DEFINE_float('imb_factor', 0.01, help='imb_factor for long tail dataset')
+flags.DEFINE_string('train_manifest', '', help='ImageNet-LT train manifest for data_type=imagenet_lt')
 flags.DEFINE_integer('num_class', 0, help='number of class of the pretrained model')
 
 # Logging & Sampling
@@ -117,6 +118,22 @@ flags.DEFINE_float('ccua_al', 0.0, help='ccua al loss')
 flags.DEFINE_float('ccua_ucl', 0.0, help='ccua ucl loss')
 flags.DEFINE_bool('brs', False, help='whether to use batch resample')
 flags.DEFINE_float('brs_factor', 0.1, help='imb_factor after batch resample')
+
+# IP-SVT: the previously evaluated exact-target Twin + angular Gram-SVT
+# objective, ported onto this native CCUA U-Net.  Keeping these flags here
+# makes the method a normal CCUA checkpoint/optimizer lineage rather than a
+# second host with a different model implementation.
+flags.DEFINE_bool('ipsvt', False, help='train the native IP-SVT auxiliary branch')
+flags.DEFINE_enum('ipsvt_mode', 'full', ['full', 'twin', 'clean'], help='IP-SVT attribution mode')
+flags.DEFINE_integer('ipsvt_K', 4, help='number of stochastic response probes')
+flags.DEFINE_float('ipsvt_s', 0.05, help='relative class-embedding perturbation radius')
+flags.DEFINE_float('ipsvt_delta', 0.1, help='correlated-noise probe coefficient')
+flags.DEFINE_float('ipsvt_tau', 1e-6, help='response norm validity threshold')
+flags.DEFINE_integer('ipsvt_every', 4, help='run the class-uniform IP-SVT branch every N updates')
+flags.DEFINE_integer('ipsvt_batch', 16, help='class-uniform IP-SVT auxiliary batch size')
+flags.DEFINE_float('ipsvt_lambda_aux', 1.0, help='IP-SVT auxiliary loss weight')
+flags.DEFINE_float('ipsvt_lambda_svt', 1.0, help='IP-SVT Gram loss weight inside the auxiliary loss')
+flags.DEFINE_bool('ipsvt_use_checkpoint', True, help='gradient-checkpoint native IP-SVT forwards')
 
 
 
@@ -195,6 +212,13 @@ def train():
                 transform=tran_transform,
                 download=True,
         )
+    elif FLAGS.data_type == 'imagenet_lt':
+        if not FLAGS.train_manifest:
+            raise ValueError('data_type=imagenet_lt requires --train_manifest')
+        dataset = ImageNetLTManifest(root=FLAGS.data_path,
+                                     manifest=FLAGS.train_manifest,
+                                     num_class=FLAGS.num_class,
+                                     transform=tran_transform)
     elif FLAGS.data_type == 'imgnetlt':
         FLAGS.data_path = FLAGS.data_path
         dataset = ImbalanceImageNet(root=FLAGS.data_path,
@@ -269,6 +293,13 @@ def train():
         transfer_mode=FLAGS.transfer_mode,label_weight_tr = weight_power_matrix,
         cbdm=FLAGS.cbdm, cb_tau=FLAGS.cb_tau,
         ccua_ucl=FLAGS.ccua_ucl, ccua_al=FLAGS.ccua_al,
+        ipsvt=FLAGS.ipsvt, ipsvt_mode=FLAGS.ipsvt_mode,
+        ipsvt_K=FLAGS.ipsvt_K, ipsvt_s=FLAGS.ipsvt_s,
+        ipsvt_delta=FLAGS.ipsvt_delta, ipsvt_tau=FLAGS.ipsvt_tau,
+        ipsvt_every=FLAGS.ipsvt_every, ipsvt_batch=FLAGS.ipsvt_batch,
+        ipsvt_lambda_aux=FLAGS.ipsvt_lambda_aux,
+        ipsvt_lambda_svt=FLAGS.ipsvt_lambda_svt,
+        ipsvt_use_checkpoint=FLAGS.ipsvt_use_checkpoint, seed=FLAGS.seed,
         ).to(device)
     net_sampler = GaussianDiffusionSampler(
         net_model, FLAGS.beta_1, FLAGS.beta_T, FLAGS.T, FLAGS.num_class, FLAGS.img_size, FLAGS.var_type).to(device)
@@ -333,7 +364,7 @@ def train():
 
             x_0 = x_0.to(device)
             y_0 = y_0.to(device)
-            loss_ddpm, loss_cbdm, loss_ccua_ucl, loss_ccua_al = trainer(x_0, y_0)
+            loss_ddpm, loss_cbdm, loss_ccua_ucl, loss_ccua_al, loss_ipsvt = trainer(x_0, y_0, step=step)
             loss_ddpm = loss_ddpm.mean()
             loss_cbdm = loss_cbdm.mean()
             loss_ccua_ucl = loss_ccua_ucl.mean()
@@ -342,7 +373,8 @@ def train():
             loss = loss_ddpm \
                    + loss_cbdm \
                    + loss_ccua_ucl * FLAGS.ccua_ucl \
-                   + loss_ccua_al * FLAGS.ccua_al
+                   + loss_ccua_al * FLAGS.ccua_al \
+                   + loss_ipsvt
             loss.backward()
 
             torch.nn.utils.clip_grad_norm_(
@@ -357,11 +389,15 @@ def train():
             writer.add_scalar('loss_cbdm', loss_cbdm, step)
             writer.add_scalar('loss_ccua_ucl', loss_ccua_ucl, step)
             writer.add_scalar('loss_ccua_al', loss_ccua_al, step)
+            writer.add_scalar('loss_ipsvt', loss_ipsvt, step)
+            for name, value in getattr(trainer, 'last_ipsvt_stats', {}).items():
+                writer.add_scalar(name, value, step)
             pbar.set_postfix(loss='%.5f' % loss,
                              loss_ddpm='%.5f' % loss_ddpm,
                              loss_cbdm='%.5f' % loss_cbdm,
                              loss_ccua_ucl='%.5f' % loss_ccua_ucl,
-                             loss_ccua_al='%.5f' % loss_ccua_al,)
+                             loss_ccua_al='%.5f' % loss_ccua_al,
+                             loss_ipsvt='%.5f' % loss_ipsvt,)
 
             # sample
             if step != 0 and step % FLAGS.sample_step == 0:

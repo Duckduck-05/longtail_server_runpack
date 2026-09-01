@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Main source-native CIFAR-100-LT IF100 campaign: DDPM/CBDM/CCUA x 3 seeds.
+# Main CCUA-backbone CIFAR-100-LT IF100 campaign: DDPM/CBDM/CCUA/IP-SVT x 3 seeds.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -11,7 +11,7 @@ elif [[ -f "$ROOT/.env" ]]; then
   set -a; source "$ROOT/.env"; set +a
 fi
 
-CAMPAIGN_NAME="native_cifar100_if100_v1"
+CAMPAIGN_NAME="ccua_cifar100_if100_v1"
 # Viettel's project home is full while the attached data volume has room for
 # checkpoints/samples.  Respect an explicit override; otherwise use that
 # volume when it exists, and fall back to the local runpack directory on other
@@ -28,7 +28,6 @@ exec > >(tee -a "$RUN_LOG") 2>&1
 echo "[run] native campaign log: $RUN_LOG"
 echo "[run] runs root: $RUNS_ROOT"
 
-export LTX_ENABLE_LEGACY_NATIVE=1
 bash scripts/bootstrap.sh
 source "${LTX_VENV:-$ROOT/.venv}/bin/activate"
 
@@ -42,14 +41,14 @@ fi
 
 REPOS_ROOT="${LTX_REPOS_ROOT:-$ROOT/third_party}"
 DATA_ROOT="${LTX_DATA_ROOT:-$ROOT/data}"
-METRICS_ROOT="${LTX_METRICS_ROOT:-$REPOS_ROOT/CBDM-pytorch/stats}"
+METRICS_ROOT="${LTX_METRICS_ROOT:-$REPOS_ROOT/CCUA-DDPM/stats}"
 python tools/prepare_cifar_metric_assets.py \
-  --repo "$REPOS_ROOT/CBDM-pytorch" \
+  --repo "$REPOS_ROOT/CCUA-DDPM" \
   --data-root "$DATA_ROOT" \
   --output "$METRICS_ROOT" \
   --datasets cifar100
 
-# The main baseline now uses the CCUA-DDPM U-Net for all three objectives.
+# The main baseline now uses the CCUA-DDPM U-Net for all four objectives.
 # The old completed DDPM checkpoint came from Coral and has extra projection
 # heads, so it is intentionally kept as an audit artifact rather than loaded
 # into this campaign. Each CCUA-DDPM baseline starts/resumes only in its own

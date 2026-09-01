@@ -1,13 +1,13 @@
-# Main CIFAR-100-LT IF100 baseline campaign.
+# Main CIFAR-100-LT IF100 campaign.
 #
-# This is the main native baseline contract: DDPM, CBDM, and CCUA all use the
-# CCUA-DDPM U-Net, checkpoint, and sampler plumbing. The shared metric host is
-# retained below only for the evaluator/reference cache; it is not a training
-# adapter. Keep this matrix small until all nine baseline rows are complete.
+# DDPM, CBDM, CCUA, and IP-SVT all use the same CCUA-DDPM U-Net, checkpoint,
+# optimizer, sampler, and metric host. IP-SVT is the minimal native port of the
+# previously evaluated objective; it changes no CCUA backbone code beyond its
+# auxiliary loss hook.
 campaign:
-  name: native_cifar100_if100_v1
+  name: ccua_cifar100_if100_v1
   protocol: native_cifar_v1
-  description: "CIFAR-100-LT IF100 native baselines: DDPM, CBDM, CCUA x seeds 0,1,2"
+  description: "CIFAR-100-LT IF100: CCUA-backed DDPM, CBDM, CCUA, and IP-SVT"
   server_config: configs/server.yaml
   paired_seeds: [0, 1, 2]
   default_priority: 100
@@ -15,7 +15,7 @@ campaign:
 
 native_contract:
   dataset: cifar100lt_if100
-  methods: [ddpm, cbdm, ccua]
+  methods: [ddpm, cbdm, ccua, ipsvt]
   seeds: [0, 1, 2]
   train_updates: 300000
   train_batch_size: 64
@@ -28,12 +28,6 @@ native_contract:
   repository: ccua
 
 repositories:
-  # Metric-only dependency for tools/evaluate_coral2025.py and the balanced
-  # CIFAR reference cache. No native task trains from this repository.
-  cbdm:
-    url: https://github.com/qym7/CBDM-pytorch.git
-    commit: 513f7fffe7369343499611a8f68212a8b40f11a1
-    directory: CBDM-pytorch
   ccua:
     url: https://github.com/C-Fun/Contrastive-Conditional-Unconditional-Alignment-for-Long-tailed-Diffusion-Model.git
     commit: baff9def6cfd553d4452d10eab0bac66ec2727aa
@@ -99,7 +93,8 @@ stages:
       - {name: ddpm, objective: ddpm}
       - {name: cbdm, objective: cbdm, cb_tau: 1.0}
       - {name: ccua, objective: ccua, ccua_al: 1.0, ccua_ucl: 1.0, brs: false}
+      - {name: ipsvt, objective: ipsvt, ipsvt_mode: full, ipsvt_K: 4, ipsvt_s: 0.05, ipsvt_delta: 0.1, ipsvt_tau: 1.0e-6, ipsvt_every: 4, ipsvt_batch: 16, ipsvt_lambda_aux: 1.0, ipsvt_lambda_svt: 1.0}
     seeds: [0, 1, 2]
-    tags: [native-cifar-v1, cifar100lt, if100, baseline]
+    tags: [ccua-backbone, native-cifar-v1, cifar100lt, if100, baseline, candidate]
 
 aggregation: {enabled: false}

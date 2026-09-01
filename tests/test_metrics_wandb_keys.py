@@ -4,8 +4,8 @@ from pathlib import Path
 from ltx.metrics import collect_metrics
 
 
-def test_unified_metrics_json_unwraps_to_clean_keys(tmp_path):
-    """evaluate_coral2025.py wraps FID/IS/KID/PRD in a "metrics" key alongside
+def test_shared_metrics_json_unwraps_to_clean_keys(tmp_path):
+    """The shared evaluator wraps FID/IS/KID/PRD in a "metrics" key alongside
     "protocol"/"label_histogram" metadata. A naive full-payload flatten buried
     every metric under generation/metrics/FID and swept protocol constants in
     as if they were metrics; this must unwrap to generation/FID instead."""
@@ -22,7 +22,7 @@ def test_unified_metrics_json_unwraps_to_clean_keys(tmp_path):
     assert not any("protocol" in k or "label_histogram" in k for k in out)
 
 
-def test_v2_host_ignores_legacy_metric_files(tmp_path):
+def test_namespaced_host_ignores_legacy_metric_files(tmp_path):
     (tmp_path / "unified_host.json").write_text(json.dumps({
         "host_revision": "t2h-unified-common-v2", "checkpoint_schema": 2,
     }))
@@ -57,8 +57,7 @@ def test_per_class_metrics_keeps_only_the_tail_summary(tmp_path):
 
 
 def test_legacy_flat_metrics_json_still_flattens_directly(tmp_path):
-    """evaluate_cm_cifar_lt.py / evaluate_cm_imagenet_lt.py have no "metrics"
-    or "groups" wrapper key; that shape must keep flattening as before."""
+    """A flat legacy-shaped metric payload still flattens directly."""
     (tmp_path / "metrics.cm.json").write_text(json.dumps({
         "protocol": "CM CIFAR-LT cifar10: released CM FID-Inception/FID/KID",
         "FID": 9.5, "KID": {"mean": 0.02, "std": 0.001, "all": [0.02, 0.021]},

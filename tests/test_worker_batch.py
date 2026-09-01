@@ -4,14 +4,14 @@ from ltx.worker import resolve_batch_size
 
 def make_task(metric_protocol, batch_size=64, oom_sizes=(128, 96, 64, 48, 32)):
     return Task(
-        id="x", campaign="c", stage="s", adapter="coral", method="ddpm", seed=0, priority=1,
+        id="x", campaign="c", stage="s", adapter="ccua", method="ddpm", seed=0, priority=1,
         dataset={}, train={"batch_size": batch_size}, eval={"metric_protocol": metric_protocol},
         method_config={}, repository={}, runtime={}, retry={"oom_batch_sizes": list(oom_sizes)},
     )
 
 
-def test_unified_contract_never_changes_batch_on_retry():
-    task = make_task("unified_cifar_v1")
+def test_native_contract_never_changes_batch_on_retry():
+    task = make_task("native_cifar_v1")
     assert resolve_batch_size(task, attempt=1) is None
     assert resolve_batch_size(task, attempt=2) is None
     assert resolve_batch_size(task, attempt=3) is None

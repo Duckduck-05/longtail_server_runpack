@@ -71,8 +71,8 @@ local_or_manual t2h-iclr2024-zhang.pdf \
 local_or_manual cm-iclr2026-hong.pdf \
   "${LTX_PAPER_CM_SRC:-}" "https://openreview.net/forum?id=wSGle6ag5I" || status=1
 
-# CORAL — NeurIPS 2025. A copy is also vendored at
-# third_party/coral-lt-diffusion/CORAL-NeurIPS2025-Rodriguezetal.pdf.
+# CORAL — NeurIPS 2025. The old vendored copy is retained in the cleanup
+# archive; this command fetches the arXiv version into papers/.
 fetch coral-neurips2025-rodriguez.pdf \
   "https://arxiv.org/pdf/2506.15933" "arXiv:2506.15933" || status=1
 

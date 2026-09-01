@@ -34,6 +34,53 @@ def brs(index, imb_data, imb_targets, cls_num, imb_factor=1.0): # batch resample
 
 
 
+
+
+
+class ImageNetLTManifest(torch.utils.data.Dataset):
+    """ImageNet-LT train split described by ``<relative path> <label>`` rows."""
+
+    def __init__(self, root, manifest, num_class=1000, transform=None, target_transform=None):
+        self.root = os.path.abspath(root)
+        self.transform = transform
+        self.target_transform = target_transform
+        self.samples = []
+        with open(manifest, encoding="utf-8") as handle:
+            for lineno, raw in enumerate(handle, 1):
+                fields = raw.split()
+                if not fields or raw.lstrip().startswith("#"):
+                    continue
+                if len(fields) != 2:
+                    raise ValueError(f"ImageNet-LT manifest line {lineno} must be '<relative_image> <label>'")
+                relative, label_raw = fields
+                label = int(label_raw)
+                if not 0 <= label < int(num_class):
+                    raise ValueError(f"ImageNet-LT label {label} at line {lineno} is outside 0..{int(num_class) - 1}")
+                image_path = relative if os.path.isabs(relative) else os.path.join(self.root, relative)
+                if not os.path.isfile(image_path):
+                    raise FileNotFoundError(f"ImageNet-LT image missing at line {lineno}: {image_path}")
+                self.samples.append((image_path, label))
+        if not self.samples:
+            raise ValueError(f"ImageNet-LT manifest is empty: {manifest}")
+        self.imgs = self.samples
+        self.targets = [label for _, label in self.samples]
+        self.classes = [str(index) for index in range(int(num_class))]
+        self.class_to_idx = {name: index for index, name in enumerate(self.classes)}
+        self.loader = datasets.folder.default_loader
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, index):
+        path, target = self.samples[index]
+        image = self.loader(path)
+        if self.transform is not None:
+            image = self.transform(image)
+        if self.target_transform is not None:
+            target = self.target_transform(target)
+        return image, target
+
+
 class ImbalanceCIFAR10(datasets.CIFAR10):
     base_folder = "cifar-10-batches-py"
     url = "https://www.cs.toronto.edu/~kriz/cifar-10-python.tar.gz"

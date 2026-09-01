@@ -224,12 +224,5 @@ class Scheduler:
         completed = sum(r["status"] == "completed" for r in rows)
         failed = sum(r["status"] == "failed" for r in rows)
         print(f"[ltx] campaign finished completed={completed} failed={failed} total={len(rows)}", flush=True)
-        if self.campaign.raw.get("aggregation", {}).get("enabled", False):
-            try:
-                from .eval import aggregate
-                result = aggregate(self.campaign)
-                print(f"[ltx] scientific verdict={result.get('verdict', {}).get('status', 'INCOMPLETE')}", flush=True)
-            except Exception as exc:
-                print(f"[ltx] aggregation failed: {exc}", flush=True)
         self.state.close()
         return 1 if failed else 0

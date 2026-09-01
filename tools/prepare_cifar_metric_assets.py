@@ -3,10 +3,9 @@
 
 This is deliberately an external preparation step, not part of any model run:
 it extracts Inception features from all 50k images of the *balanced* CIFAR
-training split, then writes the FID moments and source-PRD feature cache.  The
+training split, then writes the FID moments and source-PRD feature cache. The
 result is shared across every seed/method and is fingerprinted in a JSON
-sidecar.  It needs one CUDA GPU and downloads the public FID-Inception weights
-through the upstream CBDM implementation if they are not already cached.
+sidecar. It needs one CUDA GPU and uses the active CCUA score implementation.
 """
 from __future__ import annotations
 
@@ -67,8 +66,8 @@ def extract(repo: Path, data_root: Path, output: Path, dataset_name: str, batch_
     # without ever rebuilding a reference from the imbalanced training split.
     np.save(labels_path, np.asarray(dataset.targets, dtype=np.int64))
     np.savez(fid_path, mu=features.mean(axis=0, dtype=np.float64), sigma=np.cov(features, rowvar=False))
-    # Paper Recall uses VGG16 fc2 features and a k=3 manifold, not the
-    # Inception/k=5 approximation present in the released CBDM evaluator.
+    # Paper Recall uses VGG16 fc2 features and a k=3 manifold, not an
+    # Inception approximation.
     raw_images = np.asarray(dataset.data, dtype=np.float32).transpose(0, 3, 1, 2) / 255.0
     vgg_features = vgg16_fc2(raw_images, batch_size=min(batch_size, 64))
     vgg_path = output / f"{dataset_name}_vgg16_fc2.npy"
@@ -77,20 +76,22 @@ def extract(repo: Path, data_root: Path, output: Path, dataset_name: str, batch_
     np.save(vgg_radii_path, knn_radii(vgg_features, k=3))
     # The released runpack deliberately vendors source without .git metadata.
     # Preserve provenance from the checked-in vendor manifest instead of
-    # silently requiring the original checkout.
+    # silently requiring the original checkout. Native CCUA is also the metric
+    # host, so the metric cache lives beside the active backbone.
     manifest_path = repo.parent / "THIRD_PARTY_MANIFEST.json"
     try:
         components = json.loads(manifest_path.read_text(encoding="utf-8"))["components"]
-        component_name = "t2h_unified" if repo.name == "T2H-unified" else "cbdm"
-        component = components[component_name]
+        if repo.name != "CCUA-DDPM":
+            raise RuntimeError(f"active metric preparation requires CCUA-DDPM, got {repo}")
+        component = components["ccua"]
         commit = component["commit"]
     except Exception as exc:
-        raise RuntimeError(f"vendored CBDM provenance missing: {manifest_path}: {exc}") from exc
+        raise RuntimeError(f"vendored CCUA provenance missing: {manifest_path}: {exc}") from exc
     manifest = {
         "dataset": dataset_name,
         "split": "balanced CIFAR training (50,000 images, class-uniform source)",
         "num_images": int(len(dataset)),
-        "feature_extractor": f"pinned {repo.name} score.inception.InceptionV3 (2048-d)",
+        "feature_extractor": f"pinned {repo.name} InceptionV3 (2048-d)",
         "metric_protocol": "shared FID and PRD feature cache",
         "repository": str(repo),
         "repository_commit": commit,

@@ -518,7 +518,7 @@ def _check_coral2025_metric_protocol(campaign: LoadedCampaign, repo_root: Path) 
     if campaign.raw.get("campaign", {}).get("paper_protocol") != "coral2025_table1_cifar":
         return []
     checks: List[Check] = []
-    evaluator = campaign.root / "tools" / "evaluate_coral2025.py"
+    evaluator = campaign.root / "tools" / "evaluate_ccua.py"
     if evaluator.is_file():
         checks.append(Check("PASS", "paper-improved-prd", "shared VGG16 fc2 / k=3 evaluator present"))
     else:
@@ -677,7 +677,7 @@ def _check_unified_cifar_contract(campaign: LoadedCampaign, repo_root: Path) -> 
     else:
         checks.append(Check("PASS", "unified-controls", f"{updates} updates, batch={batch}, lr={lr:g}, T={diffusion_steps}, N={generated}, common evaluator + KID + tail FID"))
 
-    evaluator = campaign.root / "tools" / "evaluate_coral2025.py"
+    evaluator = campaign.root / "tools" / "evaluate_ccua.py"
     if evaluator.is_file():
         checks.append(Check("PASS", "unified-evaluator", "shared FID/IS/PRD/improved-PRD evaluator present"))
     else:
@@ -717,7 +717,7 @@ def _check_unified_cifar_contract(campaign: LoadedCampaign, repo_root: Path) -> 
 def _check_native_cifar_contract(campaign: LoadedCampaign, repo_root: Path | None = None) -> List[Check]:
     """Validate the CCUA-DDPM-backed native CIFAR baseline before GPU work.
 
-    The native contract deliberately has one adapter/repository for all three
+    The native contract deliberately has one adapter/repository for all four
     objectives.  Objective-specific behavior is dispatched by
     :class:`CCUAAdapter`; this gate keeps a YAML edit from silently restoring
     the old Coral/CBDM split or changing the official CCUA sampler for only one
@@ -728,7 +728,7 @@ def _check_native_cifar_contract(campaign: LoadedCampaign, repo_root: Path | Non
 
     checks: List[Check] = []
     contract = campaign.raw.get("native_contract", {})
-    expected_methods = set(contract.get("methods", ("ddpm", "cbdm", "ccua")))
+    expected_methods = set(contract.get("methods", ("ddpm", "cbdm", "ccua", "ipsvt")))
     expected_seeds = sorted(map(int, contract.get("seeds", campaign.raw.get("campaign", {}).get("paired_seeds", [0, 1, 2]))))
     tasks = campaign.tasks
     actual_methods = {task.method for task in tasks}
@@ -760,10 +760,11 @@ def _check_native_cifar_contract(campaign: LoadedCampaign, repo_root: Path | Non
                         "; ".join(adapter_errors) if adapter_errors else "all objectives use the CCUA adapter and CCUA-DDPM repository"))
 
     objective_errors: list[str] = []
+    allowed_objectives = {"ddpm", "cbdm", "t2h", "ccua", "ipsvt"}
     for task in tasks:
         prefix = f"{task.method}/seed{task.seed}"
         objective = str(task.method_config.get("objective", task.method)).strip().lower()
-        if objective not in {"ddpm", "cbdm", "ccua"} or objective != task.method:
+        if objective not in allowed_objectives or objective != task.method:
             objective_errors.append(f"{prefix}: objective={objective!r}, expected {task.method!r}")
             continue
         if objective == "cbdm":
@@ -773,7 +774,7 @@ def _check_native_cifar_contract(campaign: LoadedCampaign, repo_root: Path | Non
                 cb_tau = -1.0
             if not np.isfinite(cb_tau) or cb_tau <= 0:
                 objective_errors.append(f"{prefix}: cb_tau must be finite and > 0")
-        elif objective in {"ddpm", "cbdm"}:
+        elif objective in {"ddpm", "cbdm", "t2h"}:
             for key in ("ccua_al", "ccua_ucl"):
                 try:
                     value = float(task.method_config.get(key, 0.0))
@@ -789,8 +790,18 @@ def _check_native_cifar_contract(campaign: LoadedCampaign, repo_root: Path | Non
                     value = 0.0
                 if not np.isfinite(value) or value <= 0:
                     objective_errors.append(f"{prefix}: {key} must be finite and > 0 for ccua")
+        elif objective == "ipsvt":
+            try:
+                ipsvt_k = int(task.method_config.get("ipsvt_K", 4))
+            except (TypeError, ValueError):
+                ipsvt_k = 0
+            if ipsvt_k < 2:
+                objective_errors.append(f"{prefix}: ipsvt_K must be >= 2 for old Gram-SVT")
+            mode = str(task.method_config.get("ipsvt_mode", "full"))
+            if mode not in {"full", "twin", "clean"}:
+                objective_errors.append(f"{prefix}: ipsvt_mode={mode!r} is invalid")
     checks.append(Check("ERROR" if objective_errors else "PASS", "native-cifar-objectives",
-                        "; ".join(objective_errors) if objective_errors else "DDPM/CBDM/CCUA objective dispatch is explicit"))
+                        "; ".join(objective_errors) if objective_errors else "DDPM/CBDM/T2H/CCUA/IP-SVT objective dispatch is explicit"))
 
     if repo_root is None:
         runtime_root = campaign.server.get("runtime", {}).get("repos_root")
@@ -814,6 +825,8 @@ def _check_native_cifar_contract(campaign: LoadedCampaign, repo_root: Path | Non
                 "flags.DEFINE_bool('sample'",
                 "if FLAGS.sample:",
             )
+            if any(task.method == "ipsvt" for task in tasks):
+                required_markers += ("flags.DEFINE_bool('ipsvt'",)
             missing = [marker for marker in required_markers if marker not in source]
             sample_export = repo_root / ccua_directory / ".ltx_ccua_sample_export_v1"
             if missing:
@@ -901,7 +914,12 @@ def _check_coral_metric_assets(campaign: LoadedCampaign) -> List[Check]:
             "metrics.py", "unified_main.py",
         )
     elif native_ccua:
-        required_source = ("dataset.py", "diffusion.py", "main.py", "model/model.py")
+        required_source = (
+            "dataset.py", "diffusion.py", "main.py", "model/model.py",
+            "score/inception.py", "score/fid.py", "score/prd_score.py",
+        )
+        if any(t.method == "ipsvt" for t in tasks):
+            required_source += ("ipsvt_aux.py",)
     else:
         required_source = ("dataset.py", "score/both.py", "score/improved_prd.py", "utils/augmentation.py", "loss_tracker.py")
     missing_source = [item for item in required_source if not (repo / item).exists()]
@@ -935,11 +953,19 @@ def _check_coral_metric_assets(campaign: LoadedCampaign) -> List[Check]:
             metrics_root = (repo / "stats").resolve()
         else:
             cbdm_cfg = campaign.raw.get("repositories", {}).get("cbdm", {})
-            metrics_root = (
-                Path(campaign.server["runtime"]["repos_root"])
-                / cbdm_cfg.get("directory", "CBDM-pytorch")
-                / "stats"
-            ).resolve()
+            if native_ccua:
+                ccua_cfg = campaign.raw.get("repositories", {}).get("ccua", {})
+                metrics_root = (
+                    Path(campaign.server["runtime"]["repos_root"])
+                    / ccua_cfg.get("directory", "CCUA-DDPM")
+                    / "stats"
+                ).resolve()
+            else:
+                metrics_root = (
+                    Path(campaign.server["runtime"]["repos_root"])
+                    / cbdm_cfg.get("directory", "CBDM-pytorch")
+                    / "stats"
+                ).resolve()
     wanted = {str(t.dataset.get("data_type", "")) for t in tasks}
     names = set()
     if "cifar10" in wanted or "cifar10lt" in wanted:

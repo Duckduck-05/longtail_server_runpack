@@ -1,10 +1,9 @@
-# Reproducible CUDA environment for the standalone CM + CORAL runpack.
+# Reproducible CUDA environment for the CCUA-backbone runpack.
 #
-# Derived from the checked-in Longtail requirements and the pinned upstream
-# CM/CORAL source requirements.  Longtail itself has no environment.yml to
-# copy; this file intentionally contains only runtime packages, not a dump of
+# Derived from the checked-in runpack requirements and the active CCUA source.
+# This file intentionally contains only runtime packages, not a dump of
 # another machine's unrelated applications or credentials.
-name: longtail-cm-coral
+name: longtail-ccua
 channels:
   - pytorch
   - nvidia
@@ -31,7 +30,7 @@ dependencies:
   - tqdm=4.67.1
   - tensorboard=2.18.0
   - pip:
-      # Vendored CM/CORAL entrypoints and runpack orchestration.
+      # Active CCUA entrypoint and runpack orchestration.
       - absl-py==2.1.0
       - tensorboardX==2.6.2.2
       - wandb==0.19.6

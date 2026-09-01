@@ -1,12 +1,20 @@
-# Vendored third-party sources
+# Active vendor policy
 
-This directory is part of the delivered runpack and is deliberately independent
-of `../Longtail`. It contains working-tree copies of CBDM-pytorch, IGD-ML,
-ImbDiff-CM, OC_LT, and CORAL, without their nested git metadata.
+`CCUA-DDPM/` is the only active model, data-loader, sampler, checkpoint, and
+metric runtime for the current experiments. DDPM, CBDM, T2H, CCUA, and IP-SVT
+are objective flags inside that same native CCUA U-Net host; they must not be
+launched from separate vendor trees. T2H is dispatched through the CCUA host;
+the archived OC/T2H checkout is not an active runtime.
 
-Excluded from the delivery are only regenerable/downloadable material: dataset
-payloads, cached metric features/statistics, Python bytecode, and the literal
-download-cache directories named `...`. The runner downloads CIFAR and builds
-the balanced metric assets on the target server. Exact source commits, local
-worktree state, and Python-file hashes are recorded in
-`THIRD_PARTY_MANIFEST.json`.
+The shared CIFAR metric cache lives at `CCUA-DDPM/stats/`. The small
+`CCUA-DDPM/score/` namespace forwards to CCUA's released `score_new/`
+implementation so the common evaluator does not require CBDM as a runtime
+dependency.
+
+Legacy Coral, CBDM, CM, OC/T2H, and IGD sources are historical audit material
+only. They may be kept under `archive/` for reproducibility, but no active
+configuration or bootstrap script should import them.
+
+The pinned active revision and source provenance are recorded in
+`THIRD_PARTY_MANIFEST.json`; local operational patch markers in
+`CCUA-DDPM/.ltx_*` are required by preflight.

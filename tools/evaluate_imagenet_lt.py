@@ -51,8 +51,8 @@ def _load_expected_sample_provenance(args, samples: Path) -> dict | None:
     """Fail closed when the common host gives us an unexpected artifact.
 
     The native evaluator path does not pass expected fields and remains
-    backwards-compatible.  T2H-unified supplies the fields below so a metric
-    process cannot accidentally score a sample array from another checkpoint,
+    backwards-compatible.  A common-host caller may supply the fields below so
+    a metric process cannot accidentally score a sample array from another checkpoint,
     sampler, seed, or objective.
     """
     expected = {

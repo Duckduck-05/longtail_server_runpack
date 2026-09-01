@@ -12,7 +12,6 @@ from pathlib import Path
 
 from .config import load_campaign
 from .checkpoints import RESUME_MODES
-from .eval import aggregate
 from .preflight import run_preflight
 from .scheduler import Scheduler
 from .state import StateDB
@@ -88,11 +87,11 @@ def apply_resume_override(campaign, args) -> None:
             f"no campaign task matches --resume-method={method!r} "
             f"--resume-seed={seed!r} --resume-stage={stage!r}"
         )
-    supported_adapters = {"coral", "ccua", "t2h_unified"}
+    supported_adapters = {"ccua"}
     unsupported = sorted({task.adapter for task in selected if task.adapter not in supported_adapters})
     if unsupported:
         raise ValueError(
-            "external resume overrides currently support Coral, CCUA-DDPM, or T2H-unified tasks; "
+            "external resume overrides currently support CCUA-DDPM tasks only; "
             f"selected adapters={unsupported}"
         )
     if seed is None and len(selected) > 1 and "{seed}" not in str(checkpoint_template):
@@ -199,29 +198,22 @@ def cmd_stop(args) -> int:
     return 0
 
 
-def cmd_aggregate(args) -> int:
-    campaign = load_campaign(args.config)
-    result = aggregate(campaign)
-    print(json.dumps(result.get("verdict", {}), indent=2))
-    return 0 if result.get("verdict", {}).get("status") == "PASS" else 1
-
-
 def main() -> None:
     root = Path.cwd()
     load_runtime_env(root)
     parser = argparse.ArgumentParser(prog="ltx")
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("preflight", "plan", "stop", "aggregate"):
-        p = sub.add_parser(name); p.add_argument("--config", default="configs/unified_cifar.yaml")
-    status = sub.add_parser("status"); status.add_argument("--config", default="configs/unified_cifar.yaml")
+    for name in ("preflight", "plan", "stop"):
+        p = sub.add_parser(name); p.add_argument("--config", default="configs/native_cifar100_if100.yaml")
+    status = sub.add_parser("status"); status.add_argument("--config", default="configs/native_cifar100_if100.yaml")
     status.add_argument("--watch", type=int, default=0, help="refresh every N seconds")
-    retry_failed = sub.add_parser("retry-failed"); retry_failed.add_argument("--config", default="configs/unified_cifar.yaml")
+    retry_failed = sub.add_parser("retry-failed"); retry_failed.add_argument("--config", default="configs/native_cifar100_if100.yaml")
     retry_failed.add_argument("--stage", default=None)
     def int_or_auto(value: str):
         return value if value == "auto" else int(value)
 
     run = sub.add_parser("run")
-    run.add_argument("--config", default="configs/unified_cifar.yaml")
+    run.add_argument("--config", default="configs/native_cifar100_if100.yaml")
     run.add_argument("--skip-preflight", action="store_true")
     run.add_argument("--gpus", default=None, help="comma-separated GPU indices, e.g. 0,1,2,3 (default: all detected)")
     run.add_argument("--per-gpu", dest="per_gpu", type=int_or_auto, default=None,
@@ -243,7 +235,7 @@ def main() -> None:
     args = parser.parse_args()
     handlers = {
         "preflight": cmd_preflight, "plan": cmd_plan, "run": cmd_run,
-        "status": cmd_status, "stop": cmd_stop, "aggregate": cmd_aggregate, "retry-failed": cmd_retry_failed,
+        "status": cmd_status, "stop": cmd_stop, "retry-failed": cmd_retry_failed,
     }
     raise SystemExit(handlers[args.command](args))
 
